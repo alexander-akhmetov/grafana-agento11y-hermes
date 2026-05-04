@@ -1,0 +1,220 @@
+# grafana-agento11y-hermes: agent install guide
+
+You are an LLM agent (likely Hermes itself) helping a user install and configure
+this plugin. Follow the steps below in order. Ask the user for any value you
+do not have. Do **not** guess endpoints, regions, or tokens.
+
+Repo: https://github.com/alexander-akhmetov/grafana-agento11y-hermes
+Plugin name (in `~/.hermes/config.yaml`): `agento11y`
+Hermes upstream: https://github.com/NousResearch/hermes-agent
+
+## What this plugin does
+
+Records every Hermes LLM call and tool invocation to **Grafana Cloud Agent
+Observability** (agento11y in package names and env vars). It has two
+independent channels. You can configure either, both, or neither:
+
+| Channel | What flows | Where it shows up |
+|---|---|---|
+| **Generations** | Per-LLM-call records with prompts/responses/tool calls | Observability -> AI -> Conversations |
+| **OTel traces + metrics** | `gen_ai.client.*` spans and metrics | Grafana Cloud Traces / Metrics data sources |
+
+The two channels use two different endpoints but **share a single
+Grafana Cloud token**. The setup page in the Agent Observability app
+creates that token and prints every env var both channels need, so you do
+not assemble anything by hand (Step 3).
+
+### What conversation data leaves the machine (read this to the user)
+
+By default this plugin sends **full conversation content** to Grafana Cloud:
+
+- Every user prompt and every assistant response (text content).
+- Every tool call's **arguments** and the tool's **result** (truncated per
+  string at `AGENTO11Y_HERMES_MAX_CHARS`, default 12000 chars).
+- Conversation history snapshots that get attached to each generation as
+  `input` so the UI can show the full turn.
+- Token usage, model name, finish reason, and timing.
+
+Tool args and results in particular can include filesystem paths, command
+output, file contents, API responses, and anything else Hermes tools
+produce. Treat the destination Grafana Cloud stack as a place this content
+will live.
+
+This is a deliberate choice. The SDK's own default is `no_tool_content`,
+but the plugin sets `full` because tool args/results are usually the most
+useful thing to see in the AI Observability UI.
+
+The privacy lever is **`AGENTO11Y_CONTENT_CAPTURE_MODE=metadata_only`**. Set
+it before starting Hermes and the plugin still records every call, but
+only counts, model name, usage, finish reason, and timing leave the
+machine. No prompts, no responses, no tool args, no tool results. Both
+channels honor it.
+
+```bash
+# Recommended for privacy-sensitive setups: only counts, model name,
+# usage, timing. No prompts, responses, or tool I/O:
+export AGENTO11Y_CONTENT_CAPTURE_MODE=metadata_only
+
+# Middle ground: keep prompts/responses, drop tool args + results:
+export AGENTO11Y_CONTENT_CAPTURE_MODE=no_tool_content
+
+# Sample only a fraction of calls (defense-in-depth, not redaction):
+export AGENTO11Y_HERMES_SAMPLE_RATE=0.1   # 10%
+```
+
+The plugin does **no PII redaction**. It bounds payload structure
+(depth, entries, per-string length) but does not pattern-match for
+secrets, emails, or keys. If the user has compliance constraints, set
+`AGENTO11Y_CONTENT_CAPTURE_MODE=metadata_only`, or route through a Grafana
+Alloy / OTel Collector that does redaction before forwarding.
+
+## Step 1: Install into the same environment as `hermes`
+
+```bash
+which hermes                     # find the python that runs hermes
+<that-python> -m pip install grafana-agento11y-hermes
+```
+
+If `hermes` lives in a venv or pipx env, install into *that* env, not the
+system Python. The plugin loads as an entry point. If it is in the wrong
+env, Hermes will not see it.
+
+## Step 2: Enable in `~/.hermes/config.yaml`
+
+`hermes plugins enable agento11y` does not currently see pip-installed plugins.
+Edit the YAML directly:
+
+```yaml
+plugins:
+  enabled:
+    - agento11y
+```
+
+If the file or `plugins:` block does not exist, create it. Preserve any
+existing entries.
+
+## Step 3: Get the credentials from the setup page
+
+Every value comes from one page. Ask the user to open it in their stack:
+
+**`https://<stack>.grafana.net/a/grafana-agento11y-app/setup`**
+
+`<stack>` is their Grafana Cloud stack slug. If the user does not have a
+stack yet, they can create one for free at
+https://grafana.com/auth/sign-up/create-user/. The free tier is enough
+to run this plugin.
+
+Tell the user to do two things on that page, in this order:
+
+1. On the **API token** row, click **Create token**. One token covers
+   both channels. Grafana shows it once.
+2. Click **Copy as environment variables** at the bottom of the
+   credentials panel, and paste the block to you.
+
+Order matters. Copied before the token exists, the block carries
+`AGENTO11Y_AUTH_TOKEN=<create a token above>` and an unencoded OTLP auth
+header.
+
+The block looks like this:
+
+```
+AGENTO11Y_ENDPOINT=https://agento11y-<...>.grafana.net
+AGENTO11Y_PROTOCOL=http
+AGENTO11Y_AUTH_MODE=basic
+AGENTO11Y_AUTH_TENANT_ID=123456
+AGENTO11Y_AUTH_TOKEN=glc_...
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp-gateway-<...>.grafana.net/otlp
+OTEL_EXPORTER_OTLP_HEADERS='Authorization=Basic <base64 of "123456:glc_...">'
+```
+
+Check the pasted block before you use it:
+
+- Any value still in angle brackets is a placeholder, not a credential.
+  Do not export it. Send the user back to the setup page.
+- The first five lines are the generations channel, the last two are the
+  OTel channel. Each group works without the other.
+
+The token is a live secret. Keep it in what the user pastes and in what
+you write to their env; do not echo it back in summaries, and do not
+write it into a file the user did not name.
+
+## Step 4: Set the env vars
+
+The values have to be in Hermes's process environment when it starts.
+**Ask the user how they want to set them.** Some people put env vars in a
+shell profile, others in a project `.envrc`, others pull from a secret
+manager, others prefix `KEY=value hermes …` inline. Don't edit anything on
+their behalf without confirmation.
+
+The pasted block has no `export` keywords, so a shell profile or `.envrc`
+needs `export ` in front of each line.
+
+### Optional knobs (do not set unless the user asks)
+
+| Variable | Default | When to change |
+|---|---|---|
+| `AGENTO11Y_AGENT_NAME` | `hermes` | Multiple Hermes deployments and you want to distinguish them in the UI |
+| `OTEL_SERVICE_NAME` | `hermes` | Same reason |
+| `AGENTO11Y_CONTENT_CAPTURE_MODE` | `full` | Set `no_tool_content` or `metadata_only` to drop tool args/results from records |
+| `AGENTO11Y_DEBUG` | `false` | Set `true` for verbose SDK logs while debugging install |
+| `AGENTO11Y_HERMES_SAMPLE_RATE` | `1.0` | Lower if volume is high. Range `0.0`–`1.0` |
+| `AGENTO11Y_HERMES_MAX_CHARS` | `12000` | Truncation cap per redacted string |
+| `AGENTO11Y_HERMES_OTEL_AUTO` | `true` | Set `false` if the host app already installs `TracerProvider` / `MeterProvider` |
+
+## Step 5: Verify
+
+Run:
+
+```bash
+AGENTO11Y_DEBUG=true hermes
+```
+
+Tail `~/.hermes/logs/agent.log`. On a clean install you should see:
+
+```
+grafana-agento11y-hermes: installed TracerProvider with OTLP HTTP exporter
+grafana-agento11y-hermes: installed MeterProvider with OTLP HTTP exporter
+grafana-agento11y-hermes: client initialized (generations=configured, otel=configured)
+```
+
+If a channel is unconfigured the corresponding line says `unconfigured`
+instead of `configured`. That is fine if the user opted out of that channel.
+
+Have the user ask Hermes any question, then open **Grafana Cloud -> Observability -> AI -> Conversations**. The generation should
+appear within a few seconds. Check **Traces** (filter for
+`service.name = hermes`) for the OTel side.
+
+## Common failure modes
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Plugin lines never appear in `agent.log` | Installed into wrong Python env | Run `which hermes`, install into that env |
+| Plugin loads but `generations=not_configured` | `AGENTO11Y_AUTH_TOKEN` empty or `AGENTO11Y_AUTH_MODE=none` | Re-export and reload shell |
+| `401 Unauthorized` on generations | The token line is still a placeholder, or the token cannot write generations | Create the token on the setup page and copy the block again |
+| `401` on OTLP traces/metrics | The token cannot write traces and metrics, or the header was not copied from the setup page | Create the token on the setup page and copy the block again |
+| `404` on generations | `AGENTO11Y_ENDPOINT` was hand-constructed with wrong region | Copy it from the setup page instead |
+| Traces/metrics silently absent | Host app installed its own provider, or `AGENTO11Y_HERMES_OTEL_AUTO=false` | Either let the plugin install providers, or have the host app add OTLP exporters |
+
+## Hard invariants for the agent
+
+- **Take the values from the setup page, do not build them.** Never invent
+  an endpoint from a region string. Regions are not always literal
+  (`prod-us`, `prod-eu`, `prod-ap-southeast-1`, and so on) and the URLs
+  sometimes include extra segments. The same holds for the base64 in the
+  OTLP header.
+- **Never export a placeholder.** Anything in angle brackets
+  (`<create a token above>`, `<endpoint from the OpenTelemetry setup
+  link>`, `<base64 of "…">`) means the user skipped a step on the setup
+  page. Stop and ask. The plugin fails open silently, so the user will
+  not learn from Hermes that the value was wrong.
+- **One token covers both channels.** The setup page's token works as
+  `AGENTO11Y_AUTH_TOKEN` *and* as the password half of the OTel basic-auth
+  header. Do not send the user to "Generate now" on the Cloud portal's
+  OpenTelemetry card. They end up with two tokens to rotate for no benefit.
+- **Never overwrite existing env vars without confirming.** If the user
+  already has `OTEL_EXPORTER_OTLP_ENDPOINT` set for another collector,
+  ask before changing it. The plugin will respect whatever provider the
+  host installs if `AGENTO11Y_HERMES_OTEL_AUTO=false`.
+- **Handle the token as a secret.** It grants write access to the user's
+  Grafana Cloud stack. Put it only where the user says to put it, and do
+  not repeat it in your own output.
