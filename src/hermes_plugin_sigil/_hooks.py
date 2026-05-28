@@ -232,7 +232,6 @@ def _build_token_usage(usage: Any):
         total_tokens=total_tokens,
         cache_read_input_tokens=cache_read,
         cache_write_input_tokens=cache_write,
-        cache_creation_input_tokens=cache_write,
         reasoning_tokens=reasoning,
     )
 
