@@ -64,6 +64,7 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic <base64>"
 | `SIGIL_HERMES_SAMPLE_RATE` | `1.0` | Fraction of LLM and tool calls to record, `0.0`–`1.0` |
 | `SIGIL_HERMES_MAX_CHARS` | `12000` | Per-string truncation cap for redacted payloads |
 | `SIGIL_HERMES_OTEL_AUTO` | `true` | Set `false` if your application already installs a `TracerProvider` / `MeterProvider` |
+| `SIGIL_HERMES_AGENT_VERSION` | — | Stamped on each generation as `effective_version` (Sigil tracks per-version drift) |
 
 ## Verify
 
