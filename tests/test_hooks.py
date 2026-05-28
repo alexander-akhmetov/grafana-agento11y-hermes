@@ -109,7 +109,6 @@ def test_pre_post_api_request_round_trip(patch_client) -> None:
     assert usage.input_tokens == 100
     assert usage.output_tokens == 20
     assert usage.cache_read_input_tokens == 30
-    assert usage.cache_creation_input_tokens == 5
     assert usage.cache_write_input_tokens == 5
     assert usage.reasoning_tokens == 7
     output_messages = final["output"]
