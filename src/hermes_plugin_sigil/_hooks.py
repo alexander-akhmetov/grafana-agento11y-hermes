@@ -326,6 +326,7 @@ def on_pre_api_request(
             model=ModelRef(provider=provider or "unknown", name=model or "unknown"),
             conversation_id=session_id or task_id or "",
             agent_name=_agent_name(),
+            effective_version=os.environ.get("SIGIL_HERMES_AGENT_VERSION", "").strip(),
             system_prompt=system_prompt,
             started_at=started_at,
             tags={
