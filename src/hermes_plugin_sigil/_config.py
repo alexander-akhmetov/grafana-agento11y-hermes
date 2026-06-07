@@ -41,6 +41,7 @@ class SigilPluginConfig:
     generations_configured: bool = False
     otel_configured: bool = False
     otel_auth_headers: dict[str, str] = field(default_factory=dict)
+    sigil_headers: dict[str, str] = field(default_factory=dict)
 
 
 def _env(name: str) -> str:
@@ -87,6 +88,31 @@ def _otel_configured() -> bool:
     return bool(_env("OTEL_EXPORTER_OTLP_ENDPOINT"))
 
 
+def _parse_kv_csv(raw: str) -> dict[str, str]:
+    """Parse ``key=value,key=value`` like the SDK's own header parser."""
+    out: dict[str, str] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip()
+        if key:
+            out[key] = value.strip()
+    return out
+
+
+def _sigil_headers() -> dict[str, str]:
+    """Extra generation-export headers from ``SIGIL_HEADERS``.
+
+    The SDK reads ``SIGIL_HEADERS`` only when no headers are set on the config.
+    Since the plugin sets ``GenerationExportConfig.headers`` explicitly to inject
+    its User-Agent (see ``_client``), that lookup is suppressed — so we mirror it
+    here and merge the result back in.
+    """
+    return _parse_kv_csv(_env("SIGIL_HEADERS"))
+
+
 def _otel_auth_headers() -> dict[str, str]:
     """Basic-auth headers derived from the Sigil credentials, for OTLP fallback.
 
@@ -121,4 +147,5 @@ def load() -> SigilPluginConfig:
         generations_configured=_generations_configured(),
         otel_configured=_otel_configured(),
         otel_auth_headers=_otel_auth_headers(),
+        sigil_headers=_sigil_headers(),
     )

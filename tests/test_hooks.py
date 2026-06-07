@@ -635,21 +635,30 @@ def test_client_called_with_content_capture_override_when_generations_configured
     # The plugin must not pin protocol="none" when generations are configured —
     # that switch is reserved for OTel-only mode.
     assert cfg.generation_export.protocol != "none"
+    # Generations get a plugin User-Agent so Sigil can attribute the traffic.
+    ua = cfg.generation_export.headers["User-Agent"]
+    assert ua.startswith("sigil-plugin-hermes/")
+    assert "sigil-sdk-python/" in ua
 
 
-def test_client_called_with_no_args_when_content_capture_mode_set(
+def test_client_sends_plugin_user_agent_when_content_capture_mode_set(
     monkeypatch: pytest.MonkeyPatch, env_creds: None,
 ) -> None:
-    """If SIGIL_CONTENT_CAPTURE_MODE is set, the plugin defers entirely to env."""
+    """User-Agent is sent regardless of content-capture mode.
+
+    With SIGIL_CONTENT_CAPTURE_MODE set there's no content_capture override, but
+    the plugin still stamps the generation export with its User-Agent header.
+    Transport/auth stay env-resolved.
+    """
     import sigil_sdk
 
     from hermes_plugin_sigil import _client, _otel
 
     monkeypatch.setenv("SIGIL_CONTENT_CAPTURE_MODE", "no_tool_content")
-    captured: list[tuple[tuple, dict]] = []
+    captured: list[Any] = []
 
     def factory(*args: Any, **kwargs: Any) -> Any:
-        captured.append((args, kwargs))
+        captured.append(args[0] if args else kwargs.get("config"))
         from tests.conftest import FakeClient
         return FakeClient()
 
@@ -658,8 +667,35 @@ def test_client_called_with_no_args_when_content_capture_mode_set(
 
     assert _client._get_client() is not None
     assert len(captured) == 1
-    args, kwargs = captured[0]
-    assert args == () and kwargs == {}
+    cfg = captured[0]
+    assert cfg.content_capture is None
+    assert cfg.generation_export.protocol != "none"
+    assert cfg.generation_export.headers["User-Agent"].startswith("sigil-plugin-hermes/")
+
+
+def test_sigil_headers_preserved_and_user_agent_override_wins(
+    monkeypatch: pytest.MonkeyPatch, env_creds: None,
+) -> None:
+    """SIGIL_HEADERS survives the explicit-headers path, and a user UA wins."""
+    import sigil_sdk
+
+    from hermes_plugin_sigil import _client, _otel
+
+    monkeypatch.setenv("SIGIL_HEADERS", "X-Custom=1,User-Agent=my-agent/9")
+    captured: list[Any] = []
+
+    def factory(*args: Any, **kwargs: Any) -> Any:
+        captured.append(args[0] if args else kwargs.get("config"))
+        from tests.conftest import FakeClient
+        return FakeClient()
+
+    monkeypatch.setattr(sigil_sdk, "Client", factory)
+    monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
+
+    assert _client._get_client() is not None
+    headers = captured[0].generation_export.headers
+    assert headers["X-Custom"] == "1"
+    assert headers["User-Agent"] == "my-agent/9"
 
 
 def test_legacy_hermes_sigil_names_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -5,11 +5,12 @@ the OTel channel is configured, the plugin is fully no-op. If construction
 fails, the failure is cached — handlers never retry.
 
 The Sigil SDK's ``Client()`` constructor reads canonical ``SIGIL_*`` env vars
-itself, so most callers pass no explicit config. The plugin supplies an
-override only in OTel-only mode (no generations creds) to suppress the SDK's
-HTTP exporter, and to default ``content_capture`` to ``full`` when the user
-hasn't picked a mode (overriding the SDK's ``no_tool_content`` default which
-hides tool I/O in the UI).
+itself, so the plugin leaves transport/auth resolution to it. The override it
+supplies is narrow: a generation-export ``User-Agent`` header identifying the
+plugin (matching the sibling Sigil plugins), ``content_capture=full`` when the
+user hasn't picked a mode (overriding the SDK's ``no_tool_content`` default
+which hides tool I/O in the UI), and ``protocol="none"`` in OTel-only mode (no
+generations creds) to suppress the SDK's HTTP exporter.
 """
 from __future__ import annotations
 
@@ -28,17 +29,33 @@ _CONFIG: _config.SigilPluginConfig | None = None
 _LOCK = threading.Lock()
 
 
+def _generation_headers(cfg: _config.SigilPluginConfig) -> dict[str, str]:
+    """Headers for the generation export: user ``SIGIL_HEADERS`` plus our User-Agent.
+
+    Setting headers explicitly suppresses the SDK's own ``SIGIL_HEADERS`` lookup,
+    so we merge that env-derived dict back in. A user-supplied ``User-Agent``
+    (via ``SIGIL_HEADERS``) wins over the plugin default. Auth headers are still
+    layered on top by the SDK's resolver.
+    """
+    from ._version import plugin_user_agent
+
+    headers = dict(cfg.sigil_headers)
+    if not any(key.lower() == "user-agent" for key in headers):
+        headers["User-Agent"] = plugin_user_agent()
+    return headers
+
+
 def _to_sigil_client_config(cfg: _config.SigilPluginConfig):
-    """Build an override ``ClientConfig`` for the SDK, or ``None`` for full env-resolution.
+    """Build the override ``ClientConfig`` for the SDK.
 
-    When generation creds are present, returns ``None`` so ``Client()`` resolves
-    everything from canonical env. In OTel-only mode returns a config that
-    pins ``protocol="none"`` so the SDK's HTTP exporter doesn't dial the
-    default ingest endpoint.
+    Transport/auth stay env-resolved (``endpoint`` / ``protocol`` / ``auth`` are
+    left unset). The plugin only layers in:
 
-    Either way, ``content_capture=full`` is set explicitly when
-    ``SIGIL_CONTENT_CAPTURE_MODE`` is unset — the SDK's default is
-    ``no_tool_content``, which renders agent UIs empty for hermes traffic.
+    - a generation-export ``User-Agent`` header identifying the plugin;
+    - ``content_capture=full`` when ``SIGIL_CONTENT_CAPTURE_MODE`` is unset (the
+      SDK default ``no_tool_content`` renders agent UIs empty for hermes);
+    - ``protocol="none"`` in OTel-only mode so the SDK's HTTP exporter doesn't
+      dial the default ingest endpoint.
     """
     from sigil_sdk import ClientConfig, ContentCaptureMode, GenerationExportConfig
 
@@ -47,9 +64,10 @@ def _to_sigil_client_config(cfg: _config.SigilPluginConfig):
         overrides["content_capture"] = ContentCaptureMode.FULL
 
     if cfg.generations_configured:
-        if not overrides:
-            return None
-        return ClientConfig(**overrides)
+        return ClientConfig(
+            generation_export=GenerationExportConfig(headers=_generation_headers(cfg)),
+            **overrides,
+        )
 
     return ClientConfig(
         generation_export=GenerationExportConfig(protocol="none"),
