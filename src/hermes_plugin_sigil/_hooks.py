@@ -533,12 +533,16 @@ def on_post_tool_call(
         else:
             started_at = completed_at
 
+        # Leave include_content at its default. The SDK resolves tool-content
+        # capture from the mode: forced on under full, forced off under
+        # metadata_only / full_with_metadata_spans, and the seed is honored
+        # under no_tool_content. Pinning it True kept args/results in the span
+        # even when the user set no_tool_content.
         start = ToolExecutionStart(
             tool_name=tool_name or "",
             tool_call_id=tool_call_id or "",
             conversation_id=session_id or task_id or "",
             agent_name=_agent_name(),
-            include_content=True,
             started_at=started_at,
         )
         recorder = client.start_tool_execution(start)
