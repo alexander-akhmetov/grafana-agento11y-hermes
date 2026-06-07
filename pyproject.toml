@@ -20,7 +20,7 @@ classifiers = [
   "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-  "sigil-sdk>=0.5,<0.6",
+  "sigil-sdk>=0.8,<0.9",
   "opentelemetry-sdk>=1.27",
   "opentelemetry-exporter-otlp-proto-http>=1.27",
 ]
