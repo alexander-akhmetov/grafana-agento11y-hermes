@@ -88,7 +88,7 @@ hermes-plugin-sigil: installed MeterProvider with OTLP HTTP exporter
 hermes-plugin-sigil: Sigil client initialized (generations=configured, otel=configured)
 ```
 
-Ask hermes anything, then check **Grafana Cloud → AI Observability → Conversations**.
+Ask hermes anything, then check **Grafana Cloud -> Observability -> AI -> Conversations**.
 
 ## License
 

@@ -16,7 +16,7 @@ independent channels. You can configure either, both, or neither:
 
 | Channel | What flows | Where it shows up |
 |---|---|---|
-| **Generations** | Per-LLM-call records with prompts/responses/tool calls | AI Observability → Conversations |
+| **Generations** | Per-LLM-call records with prompts/responses/tool calls | Observability -> AI -> Conversations |
 | **OTel traces + metrics** | `gen_ai.client.*` spans and metrics | Grafana Cloud Traces / Metrics data sources |
 
 The two channels use two different endpoints but **share a single
@@ -114,12 +114,7 @@ If the user does not have a Grafana Cloud account/stack yet, they can
 create one for free at https://grafana.com/auth/sign-up/create-user/.
 The free tier is enough to run this plugin.
 
-### Prerequisite: enable the AI Observability plugin
-
-If they have not already: in their Grafana Cloud stack go to
-**Observability → AI Observability**, accept the terms, click **Save**.
-
-### Page A: AI Observability → Configuration
+### Page A: Observability -> AI -> Configuration
 
 URL pattern: `https://<stack>.grafana.net/plugins/grafana-sigil-app`
 
@@ -191,7 +186,7 @@ manager, others prefix `KEY=value hermes …` inline. Don't edit anything
 on their behalf without confirmation.
 
 ```
-# --- Generations channel (AI Observability → Conversations) ---
+# --- Generations channel (Observability -> AI -> Conversations) ---
 SIGIL_ENDPOINT          = <API URL from Page A>
 SIGIL_PROTOCOL          = http
 SIGIL_AUTH_MODE         = basic
@@ -254,8 +249,7 @@ hermes-plugin-sigil: Sigil client initialized (generations=configured, otel=conf
 If a channel is unconfigured the corresponding line says `unconfigured`
 instead of `configured`. That is fine if the user opted out of that channel.
 
-Have the user ask Hermes any question, then open **Grafana Cloud →
-Observability → AI Observability → Conversations**. The generation should
+Have the user ask Hermes any question, then open **Grafana Cloud -> Observability -> AI -> Conversations**. The generation should
 appear within a few seconds. Check **Traces** (filter for
 `service.name = hermes`) for the OTel side.
 
@@ -267,7 +261,7 @@ appear within a few seconds. Check **Traces** (filter for
 | Plugin loads but `generations=not_configured` | `SIGIL_AUTH_TOKEN` empty or `SIGIL_AUTH_MODE=none` | Re-export and reload shell |
 | `401 Unauthorized` on generations | Access policy missing `sigil:write` | Edit the Page B policy to include `sigil:write` |
 | `401` on OTLP traces/metrics | Access policy missing OTel write scopes, or wrong basic-auth username | Edit the Page B policy to include `metrics:write` / `traces:write` / `logs:write`. Confirm the basic-auth username is the OTLP Instance ID from Page C, not the Sigil one from Page A |
-| `404` on generations | `SIGIL_ENDPOINT` was hand-constructed with wrong region | Copy verbatim from AI Observability → Configuration |
+| `404` on generations | `SIGIL_ENDPOINT` was hand-constructed with wrong region | Copy verbatim from Observability -> AI -> Configuration |
 | Traces/metrics silently absent | Host app installed its own provider, or `SIGIL_HERMES_OTEL_AUTO=false` | Either let the plugin install providers, or have the host app add OTLP exporters |
 
 ## Hard invariants for the agent
