@@ -8,7 +8,9 @@ OTel exporter and resource configuration follow the OpenTelemetry env-var
 schema (``OTEL_EXPORTER_OTLP_ENDPOINT``, ``OTEL_EXPORTER_OTLP_HEADERS``,
 ``OTEL_SERVICE_NAME``, ``OTEL_RESOURCE_ATTRIBUTES``). The OTLP HTTP exporters
 read these themselves; the plugin only fills in ``service.name=hermes`` when
-the user hasn't set one.
+the user hasn't set one, and the Sigil basic-auth headers derived in
+``_config`` when no OTLP header env is set (endpoint still comes from
+``OTEL_EXPORTER_OTLP_ENDPOINT``).
 
 If the host application has already installed a non-proxy provider, the plugin
 leaves it untouched and uses the host's setup.
@@ -58,26 +60,45 @@ def _build_resource():
     return Resource.create(attrs)
 
 
-def _install_tracer_provider() -> Any:
+def _exporter_headers(signal_env: str, fallback_headers: dict[str, str]) -> dict[str, str] | None:
+    """Headers kwarg for an OTLP exporter, or ``None`` to let it read env itself.
+
+    Returns the Sigil-derived fallback only when the user set neither the
+    generic ``OTEL_EXPORTER_OTLP_HEADERS`` nor the signal-specific override
+    (``signal_env``). Passing ``headers=`` would otherwise clobber the user's
+    explicit env config, since the exporter's kwarg wins over the env var.
+    """
+    if not fallback_headers:
+        return None
+    if os.environ.get("OTEL_EXPORTER_OTLP_HEADERS", "").strip():
+        return None
+    if os.environ.get(signal_env, "").strip():
+        return None
+    return dict(fallback_headers)
+
+
+def _install_tracer_provider(fallback_headers: dict[str, str]) -> Any:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
     # OTLPSpanExporter() reads OTEL_EXPORTER_OTLP_ENDPOINT (appending
     # /v1/traces), OTEL_EXPORTER_OTLP_HEADERS, and OTEL_EXPORTER_OTLP_INSECURE
-    # itself.
-    exporter = OTLPSpanExporter()
+    # itself. We pass headers only as a fallback when the user set none.
+    headers = _exporter_headers("OTEL_EXPORTER_OTLP_TRACES_HEADERS", fallback_headers)
+    exporter = OTLPSpanExporter() if headers is None else OTLPSpanExporter(headers=headers)
     provider = TracerProvider(resource=_build_resource())
     provider.add_span_processor(BatchSpanProcessor(exporter))
     return provider
 
 
-def _install_meter_provider() -> Any:
+def _install_meter_provider(fallback_headers: dict[str, str]) -> Any:
     from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
-    exporter = OTLPMetricExporter()
+    headers = _exporter_headers("OTEL_EXPORTER_OTLP_METRICS_HEADERS", fallback_headers)
+    exporter = OTLPMetricExporter() if headers is None else OTLPMetricExporter(headers=headers)
     reader = PeriodicExportingMetricReader(exporter)
     return MeterProvider(resource=_build_resource(), metric_readers=[reader])
 
@@ -127,16 +148,17 @@ def setup_if_needed(plugin_cfg: _config.SigilPluginConfig) -> bool:
         return not (needs_tracer and needs_meter)
 
     try:
+        auth_src = " (auth from SIGIL_AUTH_*)" if plugin_cfg.otel_auth_headers else ""
         if needs_tracer:
-            provider = _install_tracer_provider()
+            provider = _install_tracer_provider(plugin_cfg.otel_auth_headers)
             trace.set_tracer_provider(provider)
             _INSTALLED_TRACER_PROVIDER = provider
-            logger.info("hermes-plugin-sigil: installed TracerProvider with OTLP HTTP exporter")
+            logger.info("hermes-plugin-sigil: installed TracerProvider with OTLP HTTP exporter%s", auth_src)
         if needs_meter:
-            provider = _install_meter_provider()
+            provider = _install_meter_provider(plugin_cfg.otel_auth_headers)
             metrics.set_meter_provider(provider)
             _INSTALLED_METER_PROVIDER = provider
-            logger.info("hermes-plugin-sigil: installed MeterProvider with OTLP HTTP exporter")
+            logger.info("hermes-plugin-sigil: installed MeterProvider with OTLP HTTP exporter%s", auth_src)
     except Exception as exc:
         logger.warning("hermes-plugin-sigil: failed to set up OTel providers: %s", exc)
         _SETUP_DONE = True

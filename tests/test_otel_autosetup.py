@@ -1,6 +1,8 @@
 """Tests for OTel TracerProvider + MeterProvider auto-setup."""
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from opentelemetry import metrics, trace
 from opentelemetry.metrics._internal import _ProxyMeterProvider
@@ -157,3 +159,82 @@ def test_otel_service_name_env_wins(otel_env, monkeypatch: pytest.MonkeyPatch) -
     provider = trace.get_tracer_provider()
     assert isinstance(provider, TracerProvider)
     assert provider.resource.attributes.get("service.name") == "my-app"
+
+
+# --- OTLP auth-header fallback ---
+
+_FALLBACK = {"Authorization": "Basic c3RhY2stMTpnbGNfc2VjcmV0", "X-Scope-OrgID": "stack-1"}
+
+
+def test_exporter_headers_none_without_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_HEADERS", raising=False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", raising=False)
+    assert _otel._exporter_headers("OTEL_EXPORTER_OTLP_TRACES_HEADERS", {}) is None
+
+
+def test_exporter_headers_returns_copy_of_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_HEADERS", raising=False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", raising=False)
+    out = _otel._exporter_headers("OTEL_EXPORTER_OTLP_TRACES_HEADERS", _FALLBACK)
+    assert out == _FALLBACK
+    assert out is not _FALLBACK  # defensive copy, not the config's dict
+
+
+def test_exporter_headers_suppressed_by_generic_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Basic xyz")
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", raising=False)
+    assert _otel._exporter_headers("OTEL_EXPORTER_OTLP_TRACES_HEADERS", _FALLBACK) is None
+
+
+def test_exporter_headers_suppressed_by_signal_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_HEADERS", raising=False)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "Authorization=Basic xyz")
+    assert _otel._exporter_headers("OTEL_EXPORTER_OTLP_TRACES_HEADERS", _FALLBACK) is None
+
+
+def _capture_exporters(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Patch the OTLP exporters with subclasses that record the headers kwarg."""
+    import opentelemetry.exporter.otlp.proto.http.metric_exporter as me
+    import opentelemetry.exporter.otlp.proto.http.trace_exporter as te
+
+    captured: dict[str, Any] = {}
+
+    class CapSpan(te.OTLPSpanExporter):
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            captured["span"] = kw.get("headers")
+            super().__init__(*a, **kw)
+
+    class CapMetric(me.OTLPMetricExporter):
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            captured["metric"] = kw.get("headers")
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(te, "OTLPSpanExporter", CapSpan)
+    monkeypatch.setattr(me, "OTLPMetricExporter", CapMetric)
+    return captured
+
+
+def test_fallback_headers_passed_to_exporters(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost/otlp")
+    for var in (
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+        "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    captured = _capture_exporters(monkeypatch)
+
+    cfg = _config.SigilPluginConfig(otel_auto=True, otel_configured=True, otel_auth_headers=dict(_FALLBACK))
+    assert _otel.setup_if_needed(cfg) is True
+    assert captured["span"] == _FALLBACK
+    assert captured["metric"] == _FALLBACK
+
+
+def test_user_headers_env_suppresses_fallback(otel_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """otel_env sets OTEL_EXPORTER_OTLP_HEADERS, so the fallback must not apply."""
+    captured = _capture_exporters(monkeypatch)
+
+    cfg = _config.SigilPluginConfig(otel_auto=True, otel_configured=True, otel_auth_headers=dict(_FALLBACK))
+    assert _otel.setup_if_needed(cfg) is True
+    assert captured["span"] is None
+    assert captured["metric"] is None
