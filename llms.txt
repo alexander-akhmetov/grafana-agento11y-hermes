@@ -25,6 +25,14 @@ scopes for both (`sigil:write` plus the OTLP write scopes), the same
 secret goes into `SIGIL_AUTH_TOKEN` and into the OTel `Authorization`
 header.
 
+The OTel `Authorization` header is **optional to set by hand**: when
+`OTEL_EXPORTER_OTLP_HEADERS` is unset, the plugin derives it as
+`Authorization: Basic base64("<SIGIL_AUTH_TENANT_ID>:<SIGIL_AUTH_TOKEN>")`
+(plus `X-Scope-OrgID`). That derived header is only correct when the OTLP
+basic-auth username (Page C Instance ID) equals the Sigil Instance ID
+(Page A). When the two instance IDs differ, set the header explicitly with
+the OTLP Instance ID (see Step 4).
+
 ### What conversation data leaves the machine (read this to the user)
 
 By default this plugin sends **full conversation content** to Grafana Cloud:
@@ -99,6 +107,12 @@ existing entries.
 Tell the user: **"I need you to open three pages in Grafana Cloud and
 copy five values: two endpoint URLs, two instance IDs, and one access
 policy token. I will not guess them."** Then walk them through it.
+
+### Prerequisite: a Grafana Cloud stack
+
+If the user does not have a Grafana Cloud account/stack yet, they can
+create one for free at https://grafana.com/auth/sign-up/create-user/.
+The free tier is enough to run this plugin.
 
 ### Prerequisite: enable the AI Observability plugin
 
@@ -185,20 +199,26 @@ SIGIL_AUTH_TENANT_ID    = <Instance ID from Page A>
 SIGIL_AUTH_TOKEN        = <glc_... token from Page B>
 
 # --- OTel channel (traces + metrics) ---
-# Same token as SIGIL_AUTH_TOKEN. Basic-auth username is the OTLP
-# Instance ID from Page C (which may or may not equal Page A's).
 OTEL_EXPORTER_OTLP_ENDPOINT = <OTLP endpoint from Page C>
+
+# OTEL_EXPORTER_OTLP_HEADERS is OPTIONAL.
+#  - If the OTLP Instance ID (Page C) equals the Sigil Instance ID
+#    (Page A), leave it unset: the plugin builds the basic-auth header
+#    from SIGIL_AUTH_TENANT_ID + SIGIL_AUTH_TOKEN.
+#  - If the two instance IDs differ, set it explicitly with the OTLP
+#    Instance ID as the username:
 OTEL_EXPORTER_OTLP_HEADERS  = Authorization=Basic <base64 of "<otlp-instance-id>:<glc_... token>">
 ```
 
-The OTel header needs the basic-auth value pre-encoded. To compute it:
+When you set the header explicitly, it needs the basic-auth value
+pre-encoded. To compute it:
 
 ```bash
 printf '%s' '<otlp-instance-id>:<glc_token>' | base64 | tr -d '\n'
 ```
 
 A trailing newline silently breaks the header. `tr -d '\n'` is not
-optional.
+optional. (The plugin's auto-derived header has no such pitfall.)
 
 Whatever mechanism the user picks, it must be in effect by the time
 `hermes` starts so the plugin inherits the values.
@@ -262,6 +282,13 @@ appear within a few seconds. Check **Traces** (filter for
   `SIGIL_AUTH_TOKEN` *and* as the password half of the OTel basic-auth
   header. Do not direct the user to "Generate now" on the OpenTelemetry
   card. They end up with two tokens to rotate for no benefit.
+- **The OTLP header is auto-derived only when the instance IDs match.**
+  Leaving `OTEL_EXPORTER_OTLP_HEADERS` unset makes the plugin build it from
+  `SIGIL_AUTH_TENANT_ID` + `SIGIL_AUTH_TOKEN`, using the Sigil Instance ID
+  (Page A) as the basic-auth username. That is wrong if the OTLP gateway
+  expects a different username (Page C Instance ID). If you cannot confirm
+  the two IDs are equal, set the header explicitly with the OTLP Instance
+  ID rather than relying on the fallback.
 - **Never overwrite existing env vars without confirming.** If the user
   already has `OTEL_EXPORTER_OTLP_ENDPOINT` set for another collector,
   ask before changing it. The plugin will respect whatever provider the

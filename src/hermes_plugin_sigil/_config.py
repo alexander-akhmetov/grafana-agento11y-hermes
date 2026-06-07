@@ -10,16 +10,23 @@ schema (``OTEL_EXPORTER_OTLP_ENDPOINT``, ``OTEL_EXPORTER_OTLP_HEADERS``,
 ``OTEL_SERVICE_NAME``, ``OTEL_RESOURCE_ATTRIBUTES``); the OTLP HTTP exporters
 read these themselves.
 
-This module only resolves plugin-specific knobs under the ``SIGIL_HERMES_*``
+This module resolves plugin-specific knobs under the ``SIGIL_HERMES_*``
 prefix (matching the ``SIGIL_CC_*`` / ``SIGIL_PI_*`` convention used by sibling
 plugins) and tracks two presence flags driving channel decisions in
 ``_client.py`` and ``_otel.py``.
+
+As a convenience it also derives OTLP auth headers from the Sigil basic-auth
+pair (``SIGIL_AUTH_TENANT_ID`` + ``SIGIL_AUTH_TOKEN``). ``_otel.py`` applies
+these only when the user has not set ``OTEL_EXPORTER_OTLP_HEADERS`` (nor the
+per-signal overrides) — the endpoint still comes from
+``OTEL_EXPORTER_OTLP_ENDPOINT``.
 """
 from __future__ import annotations
 
+import base64
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +40,7 @@ class SigilPluginConfig:
     otel_auto: bool = True
     generations_configured: bool = False
     otel_configured: bool = False
+    otel_auth_headers: dict[str, str] = field(default_factory=dict)
 
 
 def _env(name: str) -> str:
@@ -79,6 +87,27 @@ def _otel_configured() -> bool:
     return bool(_env("OTEL_EXPORTER_OTLP_ENDPOINT"))
 
 
+def _otel_auth_headers() -> dict[str, str]:
+    """Basic-auth headers derived from the Sigil credentials, for OTLP fallback.
+
+    Mirrors the SDK's ``basic`` mode: ``Authorization: Basic base64(tenant:token)``
+    plus ``X-Scope-OrgID: tenant``. ``_otel.py`` uses these only when the user has
+    not set ``OTEL_EXPORTER_OTLP_HEADERS`` (nor the per-signal overrides).
+
+    Returns an empty dict when either value is missing, or when
+    ``SIGIL_AUTH_MODE`` is explicitly ``bearer`` (the token is then a bearer
+    token, not a basic password — deriving basic auth from it would be wrong).
+    """
+    if _env("SIGIL_AUTH_MODE").lower() == "bearer":
+        return {}
+    tenant = _env("SIGIL_AUTH_TENANT_ID")
+    token = _env("SIGIL_AUTH_TOKEN")
+    if not (tenant and token):
+        return {}
+    creds = base64.b64encode(f"{tenant}:{token}".encode()).decode()
+    return {"Authorization": f"Basic {creds}", "X-Scope-OrgID": tenant}
+
+
 def load() -> SigilPluginConfig:
     """Resolve plugin-specific env vars to a config.
 
@@ -91,4 +120,5 @@ def load() -> SigilPluginConfig:
         otel_auto=_env_bool("SIGIL_HERMES_OTEL_AUTO", True),
         generations_configured=_generations_configured(),
         otel_configured=_otel_configured(),
+        otel_auth_headers=_otel_auth_headers(),
     )

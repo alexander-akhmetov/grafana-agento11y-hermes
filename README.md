@@ -34,6 +34,7 @@ plugins:
 ## Configure
 
 Two independent channels, each optional: generations under the canonical `SIGIL_*` schema, traces and metrics under the standard OpenTelemetry `OTEL_*` schema. You can find URLs and tokens in your Grafana account: `https://grafana.com/orgs/{org}`.
+If you do not have a Grafana Cloud account, you can create one for free at https://grafana.com/auth/sign-up/create-user/. The free tier is enough to run this plugin.
 
 ```bash
 # Generations → Sigil API (Conversations)
@@ -47,9 +48,14 @@ export SIGIL_AUTH_TOKEN="<sigil:write token>"
 
 # Traces + metrics → Grafana Cloud OTLP gateway (standard OTel envs)
 export OTEL_EXPORTER_OTLP_ENDPOINT="https://otlp-gateway-prod-<region>.grafana.net/otlp"
-# Base64 of "<instance-id>:<grafana-cloud-otlp-token>" — see your stack's
-# "OpenTelemetry" card. Use the same value for both signals or override per
-# signal with OTEL_EXPORTER_OTLP_TRACES_HEADERS / _METRICS_HEADERS.
+# OTEL_EXPORTER_OTLP_HEADERS is optional: when unset, the plugin derives
+# Authorization=Basic base64("$SIGIL_AUTH_TENANT_ID:$SIGIL_AUTH_TOKEN") plus
+# X-Scope-OrgID. That only works when the OTLP gateway's basic-auth username
+# equals SIGIL_AUTH_TENANT_ID. If the OTLP instance ID differs, set it
+# explicitly with that username (override per signal with
+# OTEL_EXPORTER_OTLP_TRACES_HEADERS / _METRICS_HEADERS):
+# Base64 of "<otlp-instance-id>:<grafana-cloud-otlp-token>" — see your stack's
+# "OpenTelemetry" card.
 export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic <base64>"
 ```
 
