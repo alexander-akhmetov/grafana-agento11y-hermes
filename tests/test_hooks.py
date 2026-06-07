@@ -138,7 +138,9 @@ def test_post_tool_call_records_full_round_trip(patch_client) -> None:
     assert start.tool_call_id == "tc_42"
     assert start.conversation_id == "s1"
     assert start.agent_name == "hermes"
-    assert start.include_content is True
+    # Plugin must not pin include_content — the SDK derives it from the capture
+    # mode, so no_tool_content can still strip tool args/results from the span.
+    assert start.include_content is False
     assert start.started_at is not None
 
     rec = patch_client._next_tool_recorder
