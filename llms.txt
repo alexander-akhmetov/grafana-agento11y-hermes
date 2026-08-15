@@ -20,18 +20,9 @@ independent channels. You can configure either, both, or neither:
 | **OTel traces + metrics** | `gen_ai.client.*` spans and metrics | Grafana Cloud Traces / Metrics data sources |
 
 The two channels use two different endpoints but **share a single
-Grafana Cloud access policy token**. As long as the token carries the
-scopes for both (`sigil:write` plus the OTLP write scopes), the same
-secret goes into `AGENTO11Y_AUTH_TOKEN` and into the OTel `Authorization`
-header.
-
-The OTel `Authorization` header is **optional to set by hand**: when
-`OTEL_EXPORTER_OTLP_HEADERS` is unset, the plugin derives it as
-`Authorization: Basic base64("<AGENTO11Y_AUTH_TENANT_ID>:<AGENTO11Y_AUTH_TOKEN>")`
-(plus `X-Scope-OrgID`). That derived header is only correct when the OTLP
-basic-auth username (Page C Instance ID) equals the Agent Observability Instance ID
-(Page A). When the two instance IDs differ, set the header explicitly with
-the OTLP Instance ID (see Step 4).
+Grafana Cloud access policy token**. The setup page in the Agent
+Observability app creates that token and prints every env var both
+channels need, so you do not assemble anything by hand (Step 3).
 
 ### What conversation data leaves the machine (read this to the user)
 
@@ -102,121 +93,93 @@ plugins:
 If the file or `plugins:` block does not exist, create it. Preserve any
 existing entries.
 
-## Step 3: Collect credentials from Grafana Cloud
+## Step 3: Get the credentials from the setup page
 
-Tell the user: **"I need you to open three pages in Grafana Cloud and
-copy five values: two endpoint URLs, two instance IDs, and one access
-policy token. I will not guess them."** Then walk them through it.
+Every value comes from one page. Ask the user to open it in their stack:
 
-### Prerequisite: a Grafana Cloud stack
+**`https://<stack>.grafana.net/a/grafana-agento11y-app/setup`**
 
-If the user does not have a Grafana Cloud account/stack yet, they can
-create one for free at https://grafana.com/auth/sign-up/create-user/.
-The free tier is enough to run this plugin.
+`<stack>` is their Grafana Cloud stack slug. If the user does not have a
+stack yet, they can create one for free at
+https://grafana.com/auth/sign-up/create-user/. The free tier is enough
+to run this plugin.
 
-### Page A: Observability -> AI -> Configuration
+Tell the user to do two things on that page, in this order:
 
-URL pattern: `https://<stack>.grafana.net/plugins/grafana-agento11y-app`
+1. On the **API token** row, click **Create token**. It creates an access
+   policy token with `sigil:write`, `metrics:write`, `traces:write` and
+   `logs:write`, so one token covers both channels. Grafana shows the
+   token once.
+2. Click **Copy as environment variables** at the bottom of the
+   credentials panel, and paste the block to you.
 
-Ask the user to copy:
+Order matters. Copied before the token exists, the block carries
+`AGENTO11Y_AUTH_TOKEN=<create a token above>` and an unencoded OTLP auth
+header.
 
-1. **API URL** → call this `AGENTO11Y_ENDPOINT`. It looks like
-   `https://sigil-prod-<region>.grafana.net`. Do **not** construct this from
-   a region name. The user copies it verbatim from the page.
-2. **Instance ID** → call this `AGENTO11Y_AUTH_TENANT_ID`. Numeric Grafana Cloud
-   stack ID.
+The block looks like this:
 
-### Page B: Stack → Administration → Users and access → Cloud access policies
+```
+AGENTO11Y_ENDPOINT=https://agento11y-prod-eu-west-2.grafana.net
+AGENTO11Y_PROTOCOL=http
+AGENTO11Y_AUTH_MODE=basic
+AGENTO11Y_AUTH_TENANT_ID=123456
+AGENTO11Y_AUTH_TOKEN=glc_...
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp-gateway-prod-eu-west-2.grafana.net/otlp
+OTEL_EXPORTER_OTLP_HEADERS='Authorization=Basic <base64 of "123456:glc_...">'
+```
 
-URL: `https://<stack>.grafana.net/a/grafana-auth-app` (same `<stack>` as
-Page A). Click **Create access policy**.
+Check the pasted block before you use it:
 
-Create **one** access policy token that covers both channels. The same
-token will be reused in `AGENTO11Y_AUTH_TOKEN` and in the OTel
-`Authorization` header.
+- Any value still in angle brackets is a placeholder, not a credential.
+  Do not export it. See "When the setup page cannot do it" below.
+- The first five lines are the generations channel, the last two are the
+  OTel channel. Each group works without the other.
 
-- **Display name** and **Name**: anything, e.g. `agento11y-hermes` in both
-  fields. Name is the unique identifier; display name is what shows up
-  in the list.
-- **Scopes** — in the Read/Write/Delete/Import grid, tick:
-  - `metrics`: **Write** and **Import** (OTel metrics)
-  - `traces`: **Write** (OTel traces)
-  - `logs`: **Write**, `profiles`: **Write**, `alerts`: **Write**,
-    `rules`: **Write** — the plugin doesn't use these directly, but
-    matching what the OTLP card's "Generate now" button would create
-    means one token works for any future Grafana Cloud writer in this
-    stack and saves a rotation later.
-- Then use the **Add scope** dropdown to add **`sigil:write`** (the
-  generations channel). It is not in the default grid; the dropdown
-  surfaces it because the AI Observability prerequisite step enabled
-  the plugin in this stack.
-- Click **Create**, then on the new policy click **Add token**, copy the
-  token shown once.
+The token is a live secret. Keep it in what the user pastes and in what
+you write to their env; do not echo it back in summaries, and do not
+write it into a file the user did not name.
 
-3. The token from this page → call this `AGENTO11Y_AUTH_TOKEN`. Starts with
-   `glc_…`. Keep it. It's also the password half of the OTel basic-auth
-   header below.
+### When the setup page cannot do it
 
-### Page C: Cloud portal → stack details → OpenTelemetry card
+**No Create token button.** In-app creation needs the Agento11y Admin
+role on a stack provisioned for it. The row then links to Cloud access
+policies (**Administration -> Users and access -> Cloud access policies**).
+There the user creates a policy with scope `sigil:write` (from the **Add
+scope** dropdown, not the grid) plus `metrics:write`, `traces:write` and
+`logs:write` for the OTel channel, clicks **Add token**, and copies the
+`glc_…` value. Then the "Copy as environment variables" block still gives
+the endpoints and instance ID, and the user fills the token in.
 
-Only needed if the user wants traces and metrics (recommended, but optional).
+**OTLP endpoint shows "Not configured".** The stack has no OTLP gateway
+URL provisioned. Drop the two `OTEL_*` lines and run generations only, or
+have the user add an OpenTelemetry connection to the stack first and come
+back for the value.
 
-URL: `https://grafana.com/orgs/<org>/stacks/<stack-id>`. Find the
-**OpenTelemetry** card on that page.
+**The OTLP header came out as a placeholder.** Encode it:
 
-Ask the user to copy:
+```bash
+printf '%s' '<instance-id>:<glc_token>' | base64 | tr -d '\n'
+```
 
-4. **OTLP Endpoint URL** → call this `OTEL_EXPORTER_OTLP_ENDPOINT`. It looks
-   like `https://otlp-gateway-prod-<region>.grafana.net/otlp`. Copy
-   verbatim, do not construct.
-5. The numeric **Instance ID** shown on the card. This is the basic-auth
-   *username* for OTLP. It may match the AI Observability Instance ID from
-   Page A, or it may not. Copy whichever number the card shows.
-
-Do **not** click "Generate now" on this card. The Page B token already
-covers OTLP scopes, and one token is easier to rotate than two. We only
-need the Instance ID and endpoint URL from this page.
+A trailing newline silently breaks the header, so `tr -d '\n'` is not
+optional. Alternative: leave `OTEL_EXPORTER_OTLP_HEADERS` unset. With the
+endpoint set and no header, the plugin derives
+`Authorization: Basic base64("<AGENTO11Y_AUTH_TENANT_ID>:<AGENTO11Y_AUTH_TOKEN>")`
+plus `X-Scope-OrgID`. That is correct as long as the OTLP gateway takes
+the same instance ID as Agent Observability, which is what the setup page
+assumes too.
 
 ## Step 4: Set the env vars
 
-These are the values Hermes needs in its process environment. **Ask the
-user how they want to set them.** Some people put env vars in a shell
-profile, others in a project `.envrc`, others pull from a secret
-manager, others prefix `KEY=value hermes …` inline. Don't edit anything
-on their behalf without confirmation.
+The values have to be in Hermes's process environment when it starts.
+**Ask the user how they want to set them.** Some people put env vars in a
+shell profile, others in a project `.envrc`, others pull from a secret
+manager, others prefix `KEY=value hermes …` inline. Don't edit anything on
+their behalf without confirmation.
 
-```
-# --- Generations channel (Observability -> AI -> Conversations) ---
-AGENTO11Y_ENDPOINT          = <API URL from Page A>
-AGENTO11Y_PROTOCOL          = http
-AGENTO11Y_AUTH_MODE         = basic
-AGENTO11Y_AUTH_TENANT_ID    = <Instance ID from Page A>
-AGENTO11Y_AUTH_TOKEN        = <glc_... token from Page B>
-
-# --- OTel channel (traces + metrics) ---
-OTEL_EXPORTER_OTLP_ENDPOINT = <OTLP endpoint from Page C>
-
-# OTEL_EXPORTER_OTLP_HEADERS is OPTIONAL.
-#  - If the OTLP Instance ID (Page C) equals the Agent Observability Instance ID
-#    (Page A), leave it unset: the plugin builds the basic-auth header
-#    from AGENTO11Y_AUTH_TENANT_ID + AGENTO11Y_AUTH_TOKEN.
-#  - If the two instance IDs differ, set it explicitly with the OTLP
-#    Instance ID as the username:
-OTEL_EXPORTER_OTLP_HEADERS  = Authorization=Basic <base64 of "<otlp-instance-id>:<glc_... token>">
-```
-
-When you set the header explicitly, it needs the basic-auth value
-pre-encoded. To compute it:
-
-```bash
-printf '%s' '<otlp-instance-id>:<glc_token>' | base64 | tr -d '\n'
-```
-
-A trailing newline silently breaks the header. `tr -d '\n'` is not
-optional. (The plugin's auto-derived header has no such pitfall.)
-
-Whatever mechanism the user picks, it must be in effect by the time
-`hermes` starts so the plugin inherits the values.
+The pasted block has no `export` keywords, so a shell profile or `.envrc`
+needs `export ` in front of each line.
 
 ### Optional knobs (do not set unless the user asks)
 
@@ -259,34 +222,32 @@ appear within a few seconds. Check **Traces** (filter for
 |---|---|---|
 | Plugin lines never appear in `agent.log` | Installed into wrong Python env | Run `which hermes`, install into that env |
 | Plugin loads but `generations=not_configured` | `AGENTO11Y_AUTH_TOKEN` empty or `AGENTO11Y_AUTH_MODE=none` | Re-export and reload shell |
-| `401 Unauthorized` on generations | Access policy missing `sigil:write` | Edit the Page B policy to include `sigil:write` |
-| `401` on OTLP traces/metrics | Access policy missing OTel write scopes, or wrong basic-auth username | Edit the Page B policy to include `metrics:write` / `traces:write` / `logs:write`. Confirm the basic-auth username is the OTLP Instance ID from Page C, not the Agent Observability one from Page A |
-| `404` on generations | `AGENTO11Y_ENDPOINT` was hand-constructed with wrong region | Copy verbatim from Observability -> AI -> Configuration |
+| `401 Unauthorized` on generations | Access policy missing `sigil:write`, or the token line is still a placeholder | Create the token on the setup page and copy the block again |
+| `401` on OTLP traces/metrics | Access policy missing OTel write scopes, or the OTLP gateway expects a different basic-auth username | Give the policy `metrics:write` / `traces:write` / `logs:write`. If the stack's OTLP instance ID differs from the Agent Observability one, rebuild the header with the OTLP instance ID as the username |
+| `404` on generations | `AGENTO11Y_ENDPOINT` was hand-constructed with wrong region | Copy it from the setup page instead |
 | Traces/metrics silently absent | Host app installed its own provider, or `AGENTO11Y_HERMES_OTEL_AUTO=false` | Either let the plugin install providers, or have the host app add OTLP exporters |
 
 ## Hard invariants for the agent
 
-- **Never invent endpoints from a region string.** Both the generations endpoint
-  and the OTLP endpoint must come from the user's Grafana Cloud UI, not
-  from your own pattern-matching. Regions are not always literal (`prod-us`,
-  `prod-eu`, `prod-ap-southeast-1`, etc.) and the URLs sometimes include
-  extra segments.
-- **One token covers both channels.** A single Page B access policy
-  token, with `sigil:write` plus the OTLP write scopes, works for
+- **Take the values from the setup page, do not build them.** Never invent
+  an endpoint from a region string. Regions are not always literal
+  (`prod-us`, `prod-eu`, `prod-ap-southeast-1`, and so on) and the URLs
+  sometimes include extra segments. The same holds for the base64 in the
+  OTLP header.
+- **Never export a placeholder.** Anything in angle brackets
+  (`<create a token above>`, `<endpoint from the OpenTelemetry setup
+  link>`, `<base64 of "…">`) means the user skipped a step on the setup
+  page. Stop and ask. The plugin fails open silently, so the user will
+  not learn from Hermes that the value was wrong.
+- **One token covers both channels.** The setup page's token carries
+  `sigil:write` plus the OTLP write scopes, so it works as
   `AGENTO11Y_AUTH_TOKEN` *and* as the password half of the OTel basic-auth
-  header. Do not direct the user to "Generate now" on the OpenTelemetry
-  card. They end up with two tokens to rotate for no benefit.
-- **The OTLP header is auto-derived only when the instance IDs match.**
-  Leaving `OTEL_EXPORTER_OTLP_HEADERS` unset makes the plugin build it from
-  `AGENTO11Y_AUTH_TENANT_ID` + `AGENTO11Y_AUTH_TOKEN`, using the Agent Observability Instance ID
-  (Page A) as the basic-auth username. That is wrong if the OTLP gateway
-  expects a different username (Page C Instance ID). If you cannot confirm
-  the two IDs are equal, set the header explicitly with the OTLP Instance
-  ID rather than relying on the fallback.
+  header. Do not send the user to "Generate now" on the Cloud portal's
+  OpenTelemetry card. They end up with two tokens to rotate for no benefit.
 - **Never overwrite existing env vars without confirming.** If the user
   already has `OTEL_EXPORTER_OTLP_ENDPOINT` set for another collector,
   ask before changing it. The plugin will respect whatever provider the
   host installs if `AGENTO11Y_HERMES_OTEL_AUTO=false`.
-- **Stop and ask if any of the five values is missing.** Do not proceed
-  with placeholder values. The plugin will fail open silently and the user
-  will not know why no data shows up.
+- **Handle the token as a secret.** It grants write access to the user's
+  Grafana Cloud stack. Put it only where the user says to put it, and do
+  not repeat it in your own output.
