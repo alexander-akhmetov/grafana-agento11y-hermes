@@ -163,8 +163,14 @@ jobs:
           # so the bookkeeping commit never becomes a bullet.
           git commit -m "Release ${TAG}: changelog"
           git push -u origin "$BRANCH"
-          if ! gh pr view "$BRANCH" &>/dev/null; then
-            gh pr create --title "Release ${TAG}: changelog" \
-              --body "CHANGELOG.md entry for ${TAG}, generated from the tag by the release workflow." \
-              --base main
+          if gh pr view "$BRANCH" &>/dev/null; then
+            exit 0
+          fi
+          # Opening a PR needs "Allow GitHub Actions to create and approve pull
+          # requests" in the repository settings. The branch is pushed either
+          # way, so a refusal costs a manual click, not a failed release.
+          if ! gh pr create --title "Release ${TAG}: changelog" \
+            --body "CHANGELOG.md entry for ${TAG}, generated from the tag by the release workflow." \
+            --base main; then
+            echo "::warning::could not open the changelog PR, open it at https://github.com/${GITHUB_REPOSITORY}/compare/main...${BRANCH}?expand=1"
           fi
