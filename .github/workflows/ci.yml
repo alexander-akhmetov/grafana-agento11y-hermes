@@ -38,6 +38,10 @@ jobs:
       - name: Lint
         run: make lint
 
+      # Bash, so it runs here rather than in the Python test matrix.
+      - name: Test the changelog scripts
+        run: make changelog-test
+
   test:
     runs-on: ubuntu-latest
     strategy:
