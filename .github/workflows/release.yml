@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+-*"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload the artifacts
+      id-token: write # OIDC token for the provenance attestation
+      attestations: write
+    steps:
+      # hatch-vcs derives the version from git tags. A shallow clone has none,
+      # and produces a wrong dev version instead of failing.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      # A tag can point at any commit, so do not assume CI already passed here.
+      - name: Test
+        run: |
+          make sync
+          make test
+
+      - name: Build
+        run: make build
+
+      # hatch-vcs appends a dev segment when HEAD is not exactly on the tag or
+      # the tree is dirty. A dev version must not ship as a release.
+      - name: Check built version matches the tag
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          wheel="$(ls dist/*.whl)"
+          built="$(basename "${wheel}" | cut -d- -f2)"
+          echo "tag=${tag} built=${built}"
+          if [ "${tag}" != "${built}" ]; then
+            echo "::error::built version ${built} does not match tag ${tag}"
+            exit 1
+          fi
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: "dist/*"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes --verify-tag

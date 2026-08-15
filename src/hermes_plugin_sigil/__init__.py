@@ -18,6 +18,7 @@ The plugin fails open: missing credentials, SDK errors, exporter failures, and
 network errors all become silent no-ops after at most one warning log. The
 hermes agent loop is never blocked or interrupted by telemetry issues.
 """
+
 from __future__ import annotations
 
 from ._hooks import (

@@ -1,0 +1,35 @@
+version: 2
+
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      # ruff and ty release often, and a bump can only break CI, never a user.
+      dev-tools:
+        patterns:
+          - "ruff"
+          - "ty"
+          - "pytest*"
+      # OTel ships every package on one version, so bumping them separately
+      # produces PRs that cannot resolve.
+      opentelemetry:
+        patterns:
+          - "opentelemetry-*"
+    ignore:
+      # A major or minor bump needs the hook code reviewed against the new SDK.
+      - dependency-name: "sigil-sdk"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      actions:
+        patterns:
+          - "*"

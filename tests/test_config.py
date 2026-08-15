@@ -1,4 +1,5 @@
 """Config resolution tests, including the OTLP auth-header fallback."""
+
 from __future__ import annotations
 
 import base64

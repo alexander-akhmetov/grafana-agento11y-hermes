@@ -10,6 +10,7 @@ Callers thread their resolved plugin ``max_chars`` (from
 ``SIGIL_HERMES_MAX_CHARS``) into every entry call. There is no env fallback
 inside this module.
 """
+
 from __future__ import annotations
 
 import itertools
@@ -96,15 +97,9 @@ def _safe_value(value: Any, max_chars: int, depth: int, parse_json_strings: bool
         }
     if isinstance(value, (list, tuple)):
         # Sequence slicing returns a view-sized copy — no full materialization.
-        return [
-            _safe_value(v, max_chars, depth + 1, parse_json_strings)
-            for v in value[:_MAX_ENTRIES]
-        ]
+        return [_safe_value(v, max_chars, depth + 1, parse_json_strings) for v in value[:_MAX_ENTRIES]]
     if isinstance(value, set):
-        return [
-            _safe_value(v, max_chars, depth + 1, parse_json_strings)
-            for v in itertools.islice(value, _MAX_ENTRIES)
-        ]
+        return [_safe_value(v, max_chars, depth + 1, parse_json_strings) for v in itertools.islice(value, _MAX_ENTRIES)]
     if hasattr(value, "__dict__"):
         return _safe_value(vars(value), max_chars, depth + 1, parse_json_strings)
     return truncate_text(repr(value), max_chars)

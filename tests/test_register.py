@@ -1,4 +1,5 @@
 """Verify register(ctx) binds exactly the five expected hooks."""
+
 from __future__ import annotations
 
 import hermes_plugin_sigil

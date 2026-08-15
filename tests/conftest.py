@@ -6,8 +6,10 @@ network. The ``patch_client`` fixture replaces ``sigil_sdk.Client`` so that
 state in ``_client``, ``_otel``, and ``_state`` is reset between tests so
 ordering doesn't leak.
 """
+
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -72,7 +74,7 @@ class FakeClient:
 
 
 @pytest.fixture(autouse=True)
-def reset_module_state() -> None:
+def reset_module_state() -> Iterator[None]:
     """Clear cached client + recorder state before every test."""
     _client._reset_for_tests()
     _state.reset_for_tests()
@@ -107,6 +109,7 @@ def patch_client(monkeypatch: pytest.MonkeyPatch, env_creds: None) -> FakeClient
     monkeypatch.setattr(sigil_sdk, "Client", factory)
     # Skip the real OTel auto-setup — tests for that path are isolated.
     from hermes_plugin_sigil import _otel
+
     monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
 
     # Force lazy init by calling once

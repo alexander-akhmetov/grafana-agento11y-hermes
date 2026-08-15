@@ -12,6 +12,7 @@ and pass them back to ``set_result`` at post-time. Otherwise the SDK's
 Tool executions don't need cross-hook state — we only register
 ``post_tool_call``, do all the work there, and close immediately.
 """
+
 from __future__ import annotations
 
 import threading

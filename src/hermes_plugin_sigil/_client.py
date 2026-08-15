@@ -12,6 +12,7 @@ user hasn't picked a mode (overriding the SDK's ``no_tool_content`` default
 which hides tool I/O in the UI), and ``protocol="none"`` in OTel-only mode (no
 generations creds) to suppress the SDK's HTTP exporter.
 """
+
 from __future__ import annotations
 
 import logging
@@ -113,8 +114,7 @@ def _get_client(create_if_missing: bool = True) -> Any:
             _CLIENT = Client() if override is None else Client(override)
             _CONFIG = cfg
             logger.info(
-                "hermes-plugin-sigil: Sigil client initialized "
-                "(generations=%s, otel=%s)",
+                "hermes-plugin-sigil: Sigil client initialized (generations=%s, otel=%s)",
                 "configured" if cfg.generations_configured else "unconfigured",
                 "configured" if cfg.otel_configured else "unconfigured",
             )

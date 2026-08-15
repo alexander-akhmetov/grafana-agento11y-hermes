@@ -1,4 +1,5 @@
 """Tests for the generation-export User-Agent token."""
+
 from __future__ import annotations
 
 from hermes_plugin_sigil import _version

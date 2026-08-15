@@ -4,6 +4,7 @@ The fake Sigil client records every ``start_generation`` / ``start_tool_executio
 / ``shutdown`` call. The tests assert that the plugin produces correctly
 shaped payloads and that recorders are cleaned up after the post-hooks fire.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -18,9 +19,13 @@ def _sample_messages() -> list[dict]:
     return [
         {"role": "system", "content": "You are concise."},
         {"role": "user", "content": "What's 2+2?"},
-        {"role": "assistant", "content": None, "tool_calls": [
-            {"id": "tc_1", "function": {"name": "calc", "arguments": '{"expr": "2+2"}'}},
-        ]},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "tc_1", "function": {"name": "calc", "arguments": '{"expr": "2+2"}'}},
+            ],
+        },
         {"role": "tool", "tool_call_id": "tc_1", "content": "4"},
     ]
 
@@ -200,6 +205,7 @@ def test_client_init_failure_is_cached(monkeypatch: pytest.MonkeyPatch, env_cred
     import sigil_sdk
 
     from hermes_plugin_sigil import _otel
+
     monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
 
     call_count = {"n": 0}
@@ -227,20 +233,29 @@ def test_on_session_end_flushes_without_closing_client(patch_client) -> None:
 def test_session_end_lets_subsequent_session_record(patch_client) -> None:
     """After a session ends, a fresh session must still be able to record."""
     _hooks.on_pre_api_request(
-        task_id="t1", session_id="s1", model="m", provider="p",
-        messages=[{"role": "user", "content": "hi"}], api_call_count=1,
+        task_id="t1",
+        session_id="s1",
+        model="m",
+        provider="p",
+        messages=[{"role": "user", "content": "hi"}],
+        api_call_count=1,
     )
     _hooks.on_session_end()
     # Second session — same singleton, must keep working.
     _hooks.on_pre_api_request(
-        task_id="t2", session_id="s2", model="m", provider="p",
-        messages=[{"role": "user", "content": "again"}], api_call_count=1,
+        task_id="t2",
+        session_id="s2",
+        model="m",
+        provider="p",
+        messages=[{"role": "user", "content": "again"}],
+        api_call_count=1,
     )
     assert len(patch_client.start_generation_calls) == 2
 
 
 def test_session_end_force_flushes_installed_providers(
-    monkeypatch: pytest.MonkeyPatch, env_creds: None,
+    monkeypatch: pytest.MonkeyPatch,
+    env_creds: None,
 ) -> None:
     """If the plugin installed providers, on_session_end force-flushes them."""
     import sigil_sdk
@@ -270,7 +285,8 @@ def test_session_end_force_flushes_installed_providers(
 
 
 def test_session_end_does_not_flush_user_owned_providers(
-    monkeypatch: pytest.MonkeyPatch, env_creds: None,
+    monkeypatch: pytest.MonkeyPatch,
+    env_creds: None,
 ) -> None:
     """When the host app owns the providers, the plugin must not flush them."""
     import sigil_sdk
@@ -300,6 +316,7 @@ def test_on_session_end_does_not_initialize_client(monkeypatch: pytest.MonkeyPat
     import sigil_sdk
 
     from hermes_plugin_sigil import _otel
+
     monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
 
     constructed = {"n": 0}
@@ -328,14 +345,19 @@ def test_sample_rate_zero_skips_recording(monkeypatch: pytest.MonkeyPatch, patch
     from hermes_plugin_sigil import _client, _config
 
     monkeypatch.setattr(
-        _client, "_CONFIG",
+        _client,
+        "_CONFIG",
         _config.SigilPluginConfig(sample_rate=0.0),
         raising=False,
     )
 
     _hooks.on_pre_api_request(
-        task_id="t", session_id="s", model="m", provider="p",
-        messages=[{"role": "user", "content": "hi"}], api_call_count=1,
+        task_id="t",
+        session_id="s",
+        model="m",
+        provider="p",
+        messages=[{"role": "user", "content": "hi"}],
+        api_call_count=1,
     )
     _hooks.on_post_tool_call(tool_name="x", args={}, result="ok", task_id="t", session_id="s", tool_call_id="tc1")
 
@@ -372,33 +394,45 @@ def test_pre_llm_call_seeds_input_for_pre_api_request(patch_client) -> None:
 def test_post_llm_call_assigns_outputs_to_pending_recorders(patch_client) -> None:
     """Tool loop: 2 LLM calls, post_llm_call assigns each call's assistant output."""
     _hooks.on_pre_llm_call(
-        task_id="t1", session_id="s1",
+        task_id="t1",
+        session_id="s1",
         conversation_history=[{"role": "user", "content": "search for X"}],
     )
     # LLM call 1 — emits a tool call
     _hooks.on_pre_api_request(task_id="t1", session_id="s1", model="m", provider="p", api_call_count=1)
     rec1 = patch_client._next_gen_recorder
     _hooks.on_post_api_request(
-        task_id="t1", session_id="s1", api_call_count=1, model="m",
-        usage={"input_tokens": 10, "output_tokens": 5}, finish_reason="tool_calls",
+        task_id="t1",
+        session_id="s1",
+        api_call_count=1,
+        model="m",
+        usage={"input_tokens": 10, "output_tokens": 5},
+        finish_reason="tool_calls",
     )
     assert not rec1.exited  # deferred close
     # LLM call 2 — final answer
     _hooks.on_pre_api_request(task_id="t1", session_id="s1", model="m", provider="p", api_call_count=2)
     rec2 = patch_client._next_gen_recorder
     _hooks.on_post_api_request(
-        task_id="t1", session_id="s1", api_call_count=2, model="m",
-        usage={"input_tokens": 20, "output_tokens": 8}, finish_reason="stop",
+        task_id="t1",
+        session_id="s1",
+        api_call_count=2,
+        model="m",
+        usage={"input_tokens": 20, "output_tokens": 8},
+        finish_reason="stop",
     )
     assert not rec2.exited
 
     # Final conversation_history with both assistant messages
-    asst1 = {"role": "assistant", "content": None, "tool_calls": [
-        {"id": "tc_1", "function": {"name": "search", "arguments": '{"q":"X"}'}}
-    ]}
+    asst1 = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "tc_1", "function": {"name": "search", "arguments": '{"q":"X"}'}}],
+    }
     asst2 = {"role": "assistant", "content": "found 3 results"}
     _hooks.on_post_llm_call(
-        task_id="t1", session_id="s1",
+        task_id="t1",
+        session_id="s1",
         conversation_history=[
             {"role": "user", "content": "search for X"},
             asst1,
@@ -427,8 +461,12 @@ def test_completed_at_uses_api_duration_not_recorder_close_time(patch_client) ->
     a span/histogram covering the full turn (LLM + tool + later calls).
     """
     _hooks.on_pre_api_request(
-        task_id="t1", session_id="s1", model="m", provider="p",
-        messages=[{"role": "user", "content": "hi"}], api_call_count=1,
+        task_id="t1",
+        session_id="s1",
+        model="m",
+        provider="p",
+        messages=[{"role": "user", "content": "hi"}],
+        api_call_count=1,
     )
     rec = patch_client._next_gen_recorder
     state = _state.gen_get(("t1", "s1", 1))
@@ -436,8 +474,13 @@ def test_completed_at_uses_api_duration_not_recorder_close_time(patch_client) ->
     started_at = state.started_at
 
     _hooks.on_post_api_request(
-        task_id="t1", session_id="s1", api_call_count=1, model="m",
-        usage={}, finish_reason="stop", api_duration=2.5,
+        task_id="t1",
+        session_id="s1",
+        api_call_count=1,
+        model="m",
+        usage={},
+        finish_reason="stop",
+        api_duration=2.5,
     )
     _hooks.on_post_llm_call(task_id="t1", session_id="s1", conversation_history=[])
 
@@ -452,13 +495,21 @@ def test_completed_at_uses_api_duration_not_recorder_close_time(patch_client) ->
 def test_completed_at_is_none_when_api_duration_missing(patch_client) -> None:
     """No api_duration → leave completed_at unset; SDK falls back to its clock."""
     _hooks.on_pre_api_request(
-        task_id="t1", session_id="s1", model="m", provider="p",
-        messages=[{"role": "user", "content": "hi"}], api_call_count=1,
+        task_id="t1",
+        session_id="s1",
+        model="m",
+        provider="p",
+        messages=[{"role": "user", "content": "hi"}],
+        api_call_count=1,
     )
     rec = patch_client._next_gen_recorder
     _hooks.on_post_api_request(
-        task_id="t1", session_id="s1", api_call_count=1, model="m",
-        usage={}, finish_reason="stop",
+        task_id="t1",
+        session_id="s1",
+        api_call_count=1,
+        model="m",
+        usage={},
+        finish_reason="stop",
         # no api_duration kwarg
     )
     _hooks.on_post_llm_call(task_id="t1", session_id="s1", conversation_history=[])
@@ -485,54 +536,67 @@ def test_close_pending_handles_discarded_retry(patch_client) -> None:
         {"role": "user", "content": "second turn"},
     ]
     _hooks.on_pre_llm_call(
-        task_id="t1", session_id="s1",
+        task_id="t1",
+        session_id="s1",
         conversation_history=prior_history,
     )
     # Iteration 1 — response discarded by hermes (`continue` without append).
     _hooks.on_pre_api_request(task_id="t1", session_id="s1", model="m", provider="p", api_call_count=1)
     rec1 = patch_client._next_gen_recorder
     _hooks.on_post_api_request(
-        task_id="t1", session_id="s1", api_call_count=1, model="m",
-        usage={"input_tokens": 10, "output_tokens": 5}, finish_reason="stop",
+        task_id="t1",
+        session_id="s1",
+        api_call_count=1,
+        model="m",
+        usage={"input_tokens": 10, "output_tokens": 5},
+        finish_reason="stop",
     )
     # Iteration 2 — kept; produces final_response.
     _hooks.on_pre_api_request(task_id="t1", session_id="s1", model="m", provider="p", api_call_count=2)
     rec2 = patch_client._next_gen_recorder
     _hooks.on_post_api_request(
-        task_id="t1", session_id="s1", api_call_count=2, model="m",
-        usage={"input_tokens": 12, "output_tokens": 6}, finish_reason="stop",
+        task_id="t1",
+        session_id="s1",
+        api_call_count=2,
+        model="m",
+        usage={"input_tokens": 12, "output_tokens": 6},
+        finish_reason="stop",
     )
 
     asst_for_iter_2 = {"role": "assistant", "content": "real answer"}
     _hooks.on_post_llm_call(
-        task_id="t1", session_id="s1",
+        task_id="t1",
+        session_id="s1",
         conversation_history=[*prior_history, asst_for_iter_2],
         assistant_response="real answer",
     )
 
     # Discarded iter 1 closes empty — must NOT have stolen "first turn answer".
     final1 = rec1.set_result_calls[-1]
-    assert final1["output"] == [], (
-        f"discarded iteration must close with empty output, got {final1['output']}"
-    )
+    assert final1["output"] == [], f"discarded iteration must close with empty output, got {final1['output']}"
     # iter 2 (the kept one) gets the real assistant.
     final2 = rec2.set_result_calls[-1]
-    assert any(
-        p.kind == PartKind.TEXT and "real answer" in p.text
-        for p in final2["output"][0].parts
-    )
+    assert any(p.kind == PartKind.TEXT and "real answer" in p.text for p in final2["output"][0].parts)
 
 
 def test_session_end_closes_pending_recorders_on_interrupt(patch_client) -> None:
     """If post_llm_call never fires (interrupt), on_session_end must still close recorders."""
     _hooks.on_pre_api_request(
-        task_id="t1", session_id="s1", model="m", provider="p",
-        messages=[{"role": "user", "content": "hi"}], api_call_count=1,
+        task_id="t1",
+        session_id="s1",
+        model="m",
+        provider="p",
+        messages=[{"role": "user", "content": "hi"}],
+        api_call_count=1,
     )
     rec = patch_client._next_gen_recorder
     _hooks.on_post_api_request(
-        task_id="t1", session_id="s1", api_call_count=1, model="m",
-        usage={}, finish_reason="length",
+        task_id="t1",
+        session_id="s1",
+        api_call_count=1,
+        model="m",
+        usage={},
+        finish_reason="length",
     )
     assert not rec.exited
     # session_end fires before post_llm_call (interrupt path)
@@ -553,23 +617,37 @@ def test_running_convo_includes_assistant_and_tool_results(patch_client) -> None
     )
     # Call #1 — model decides to call a tool
     _hooks.on_pre_api_request(
-        task_id="t1", session_id="s1", model="m", provider="p", api_call_count=1,
+        task_id="t1",
+        session_id="s1",
+        model="m",
+        provider="p",
+        api_call_count=1,
     )
     _hooks.on_post_api_request(
-        task_id="t1", session_id="s1", api_call_count=1, model="m",
-        usage={}, finish_reason="tool_calls",
+        task_id="t1",
+        session_id="s1",
+        api_call_count=1,
+        model="m",
+        usage={},
+        finish_reason="tool_calls",
     )
     # Tool runs — post_tool_call synthesizes the assistant tool_call message
     # and appends the tool result, both into the running convo.
     _hooks.on_post_tool_call(
         tool_name="search",
         args={"q": "X"},
-        task_id="t1", session_id="s1", tool_call_id="tc_1",
+        task_id="t1",
+        session_id="s1",
+        tool_call_id="tc_1",
         result="found 3 results",
     )
     # Call #2 — model gets to see user msg + asst tool call + tool result
     _hooks.on_pre_api_request(
-        task_id="t1", session_id="s1", model="m", provider="p", api_call_count=2,
+        task_id="t1",
+        session_id="s1",
+        model="m",
+        provider="p",
+        api_call_count=2,
     )
     rec2 = patch_client._next_gen_recorder
     assert rec2 is not None
@@ -583,10 +661,12 @@ def test_running_convo_includes_assistant_and_tool_results(patch_client) -> None
 
 def test_post_llm_call_clears_running_convo(patch_client) -> None:
     _hooks.on_pre_llm_call(
-        task_id="t1", session_id="s1",
+        task_id="t1",
+        session_id="s1",
         conversation_history=[{"role": "user", "content": "hi"}],
     )
     from hermes_plugin_sigil import _state
+
     # Convo is keyed by session_id only — task_id is not passed to pre_llm_call.
     assert _state.convo_get(("", "s1")) != []
     _hooks.on_post_llm_call(task_id="t1", session_id="s1")
@@ -596,14 +676,19 @@ def test_post_llm_call_clears_running_convo(patch_client) -> None:
 def test_sample_rate_one_records_everything(patch_client) -> None:
     """SIGIL_HERMES_SAMPLE_RATE=1.0 (default) → every call recorded."""
     _hooks.on_pre_api_request(
-        task_id="t", session_id="s", model="m", provider="p",
-        messages=[{"role": "user", "content": "hi"}], api_call_count=1,
+        task_id="t",
+        session_id="s",
+        model="m",
+        provider="p",
+        messages=[{"role": "user", "content": "hi"}],
+        api_call_count=1,
     )
     assert len(patch_client.start_generation_calls) == 1
 
 
 def test_client_called_with_content_capture_override_when_generations_configured(
-    monkeypatch: pytest.MonkeyPatch, env_creds: None,
+    monkeypatch: pytest.MonkeyPatch,
+    env_creds: None,
 ) -> None:
     """Generations configured + no SIGIL_CONTENT_CAPTURE_MODE → Client gets content_capture=full only.
 
@@ -622,6 +707,7 @@ def test_client_called_with_content_capture_override_when_generations_configured
     def factory(*args: Any, **kwargs: Any) -> Any:
         captured.append(args[0] if args else None)
         from tests.conftest import FakeClient
+
         return FakeClient()
 
     monkeypatch.setattr(sigil_sdk, "Client", factory)
@@ -642,7 +728,8 @@ def test_client_called_with_content_capture_override_when_generations_configured
 
 
 def test_client_sends_plugin_user_agent_when_content_capture_mode_set(
-    monkeypatch: pytest.MonkeyPatch, env_creds: None,
+    monkeypatch: pytest.MonkeyPatch,
+    env_creds: None,
 ) -> None:
     """User-Agent is sent regardless of content-capture mode.
 
@@ -660,6 +747,7 @@ def test_client_sends_plugin_user_agent_when_content_capture_mode_set(
     def factory(*args: Any, **kwargs: Any) -> Any:
         captured.append(args[0] if args else kwargs.get("config"))
         from tests.conftest import FakeClient
+
         return FakeClient()
 
     monkeypatch.setattr(sigil_sdk, "Client", factory)
@@ -674,7 +762,8 @@ def test_client_sends_plugin_user_agent_when_content_capture_mode_set(
 
 
 def test_sigil_headers_preserved_and_user_agent_override_wins(
-    monkeypatch: pytest.MonkeyPatch, env_creds: None,
+    monkeypatch: pytest.MonkeyPatch,
+    env_creds: None,
 ) -> None:
     """SIGIL_HEADERS survives the explicit-headers path, and a user UA wins."""
     import sigil_sdk
@@ -687,6 +776,7 @@ def test_sigil_headers_preserved_and_user_agent_override_wins(
     def factory(*args: Any, **kwargs: Any) -> Any:
         captured.append(args[0] if args else kwargs.get("config"))
         from tests.conftest import FakeClient
+
         return FakeClient()
 
     monkeypatch.setattr(sigil_sdk, "Client", factory)
@@ -742,6 +832,7 @@ def test_client_config_uses_protocol_none_when_only_otel_configured(
     def factory(*args: Any, **kwargs: Any) -> Any:
         captured.append(args[0] if args else kwargs.get("config"))
         from tests.conftest import FakeClient
+
         return FakeClient()
 
     monkeypatch.setattr(sigil_sdk, "Client", factory)
