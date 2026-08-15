@@ -21,6 +21,7 @@ these only when the user has not set ``OTEL_EXPORTER_OTLP_HEADERS`` (nor the
 per-signal overrides) — the endpoint still comes from
 ``OTEL_EXPORTER_OTLP_ENDPOINT``.
 """
+
 from __future__ import annotations
 
 import base64

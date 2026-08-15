@@ -5,30 +5,60 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel PR runs only. Cancelling a main run would leave that commit with no
+# CI result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      # hatch-vcs derives the version from git tags. A shallow clone has none,
+      # and produces a wrong dev version instead of failing.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      # make sync passes --locked, which fails the job when uv.lock is out of
+      # date with pyproject.toml.
+      - name: Install
+        run: make sync
+
+      # ruff format --check, ruff check, and ty. The list lives in the Makefile
+      # so CI and the local run cannot drift.
+      - name: Lint
+        run: make lint
+
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
           python-version: ${{ matrix.python-version }}
 
-      - name: Install package and dev dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Lint
-        run: ruff check .
+      - name: Install
+        run: make sync
 
       - name: Test
-        run: pytest -q
+        run: make test
 
       - name: Import sanity check
-        run: python -c "import hermes_plugin_sigil; assert callable(hermes_plugin_sigil.register)"
+        run: uv run python -c "import hermes_plugin_sigil; assert callable(hermes_plugin_sigil.register)"

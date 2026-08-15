@@ -1,6 +1,8 @@
 """Tests for OTel TracerProvider + MeterProvider auto-setup."""
+
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -14,7 +16,7 @@ from hermes_plugin_sigil import _client, _config, _otel
 
 
 @pytest.fixture(autouse=True)
-def reset_otel(monkeypatch: pytest.MonkeyPatch) -> None:
+def reset_otel(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Reset both module-level state and the global tracer/meter providers."""
     _client._reset_for_tests()
     # Force a fresh ProxyTracerProvider for isolation. Safe: opentelemetry

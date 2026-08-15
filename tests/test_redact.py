@@ -1,4 +1,5 @@
 """Tests for the structural payload redactor."""
+
 from __future__ import annotations
 
 from hermes_plugin_sigil import _redact
@@ -20,7 +21,7 @@ def test_short_max_chars_truncates_aggressively() -> None:
 def test_max_chars_kwarg_is_required() -> None:
     # The signature mandates max_chars; calling without it must error.
     try:
-        _redact.safe_value("hi")  # type: ignore[call-arg]
+        _redact.safe_value("hi")  # ty: ignore[missing-argument]
     except TypeError:
         return
     raise AssertionError("safe_value should require max_chars")

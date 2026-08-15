@@ -6,6 +6,7 @@ ingest traffic to the integration. We match that convention:
 
     sigil-plugin-hermes/<plugin-version> sigil-sdk-python/<sdk-version>
 """
+
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version

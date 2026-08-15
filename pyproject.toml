@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.18"]
+requires = ["hatchling>=1.18", "hatch-vcs>=0.4"]
 build-backend = "hatchling.build"
 
 [project]
 name = "hermes-plugin-sigil"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Grafana AI Observability plugin for Hermes Agent — records LLM calls and tool executions as Sigil generations and OTel traces+metrics."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -17,6 +17,8 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
@@ -25,10 +27,11 @@ dependencies = [
   "opentelemetry-exporter-otlp-proto-http>=1.27",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
   "pytest>=8.0",
-  "ruff>=0.6",
+  "ruff>=0.16.3",
+  "ty==0.0.72",
 ]
 
 [project.entry-points."hermes_agent.plugins"]
@@ -37,6 +40,9 @@ sigil = "hermes_plugin_sigil"
 [project.urls]
 Homepage = "https://github.com/alexander-akhmetov/sigil-hermes"
 Repository = "https://github.com/alexander-akhmetov/sigil-hermes"
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hermes_plugin_sigil"]
@@ -56,6 +62,10 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
 ignore = ["E501"]
+
+[tool.ty.environment]
+# The lowest version we support, so ty catches use of a 3.12+ feature.
+python-version = "3.11"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

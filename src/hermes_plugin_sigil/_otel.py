@@ -15,6 +15,7 @@ the user hasn't set one, and the Sigil basic-auth headers derived in
 If the host application has already installed a non-proxy provider, the plugin
 leaves it untouched and uses the host's setup.
 """
+
 from __future__ import annotations
 
 import logging
@@ -141,7 +142,8 @@ def setup_if_needed(plugin_cfg: _config.SigilPluginConfig) -> bool:
             logger.warning(
                 "hermes-plugin-sigil: SIGIL_HERMES_OTEL_AUTO=false and no provider is configured "
                 "for %s — telemetry is disabled.",
-                "TracerProvider+MeterProvider" if (needs_tracer and needs_meter)
+                "TracerProvider+MeterProvider"
+                if (needs_tracer and needs_meter)
                 else ("TracerProvider" if needs_tracer else "MeterProvider"),
             )
         _SETUP_DONE = True

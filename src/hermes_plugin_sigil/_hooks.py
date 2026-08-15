@@ -5,6 +5,7 @@ and the hermes loop is allowed to continue. If the Sigil client cannot be
 constructed (missing creds, SDK error), every handler short-circuits via
 ``client is None``.
 """
+
 from __future__ import annotations
 
 import json
@@ -162,11 +163,7 @@ def _hermes_message_to_sigil(msg: dict[str, Any]):
                     input_json = json.dumps(tc["arguments"]).encode()
                 except Exception:
                     input_json = b""
-            parts.append(
-                tool_call_part(
-                    ToolCall(name=tc.get("name", ""), id=tc.get("id", ""), input_json=input_json)
-                )
-            )
+            parts.append(tool_call_part(ToolCall(name=tc.get("name", ""), id=tc.get("id", ""), input_json=input_json)))
         return Message(role=MessageRole.ASSISTANT, parts=parts)
     # Unknown role (e.g. "system" should already be filtered out): drop.
     return None
@@ -213,11 +210,7 @@ def _build_token_usage(usage: Any):
     input_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
     output_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
     total_tokens = int(usage.get("total_tokens") or 0)
-    cache_read = int(
-        usage.get("cache_read_tokens")
-        or usage.get("cache_read_input_tokens")
-        or 0
-    )
+    cache_read = int(usage.get("cache_read_tokens") or usage.get("cache_read_input_tokens") or 0)
     cache_write = int(
         usage.get("cache_write_tokens")
         or usage.get("cache_creation_input_tokens")
@@ -254,9 +247,10 @@ def on_pre_llm_call(
     if not isinstance(conversation_history, list):
         return
     convo = list(conversation_history)
-    if isinstance(user_message, str) and user_message and not any(
-        isinstance(m, dict) and m.get("role") == "user" and m.get("content") == user_message
-        for m in convo
+    if (
+        isinstance(user_message, str)
+        and user_message
+        and not any(isinstance(m, dict) and m.get("role") == "user" and m.get("content") == user_message for m in convo)
     ):
         convo.append({"role": "user", "content": user_message})
     key = _convo_key(task_id, session_id)
@@ -264,10 +258,7 @@ def on_pre_llm_call(
     # Snapshot the assistant-message count BEFORE post_tool_call extends the
     # running convo with synthesized tool-call messages. ``_close_pending_for_session``
     # uses this to peel this turn's assistant outputs off the final history.
-    start_asst_count = sum(
-        1 for m in conversation_history
-        if isinstance(m, dict) and m.get("role") == "assistant"
-    )
+    start_asst_count = sum(1 for m in conversation_history if isinstance(m, dict) and m.get("role") == "assistant")
     _state.turn_start_asst_count_set(key, start_asst_count)
 
 
