@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from ._compat import apply_legacy_env
 from ._hooks import (
+    on_api_request_error,
     on_post_api_request,
     on_post_llm_call,
     on_post_tool_call,
@@ -48,10 +49,16 @@ def register(ctx) -> None:
     # get_pre_tool_call_block_message), so any state stored under a pre-time key
     # would never match the post_tool_call key. Doing all tool work in
     # post_tool_call sidesteps the mismatch.
+    #
+    # api_request_error closes the generation for a call that failed. It does
+    # not cover every retry: most hermes retry paths re-enter pre_api_request
+    # with the same api_request_id and fire no error hook, which is why
+    # on_pre_api_request also closes whatever a repeated id displaces.
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     ctx.register_hook("post_llm_call", on_post_llm_call)
     ctx.register_hook("pre_api_request", on_pre_api_request)
     ctx.register_hook("post_api_request", on_post_api_request)
+    ctx.register_hook("api_request_error", on_api_request_error)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("on_session_end", on_session_end)
 
@@ -62,6 +69,7 @@ __all__ = [
     "on_post_llm_call",
     "on_pre_api_request",
     "on_post_api_request",
+    "on_api_request_error",
     "on_post_tool_call",
     "on_session_end",
 ]

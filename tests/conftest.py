@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from grafana_agento11y_hermes import _client, _hooks, _state
+from grafana_agento11y_hermes import _client, _hooks, _state, _tags
 
 
 class FakeRecorder:
@@ -25,6 +25,10 @@ class FakeRecorder:
         self.exited = False
         self.set_result_calls: list[dict[str, Any]] = []
         self.set_call_error_calls: list[Exception] = []
+        self.set_exec_error_calls: list[Exception] = []
+        # Method names in the order they were called, for tests that assert
+        # ordering rather than just occurrence.
+        self.calls: list[str] = []
 
     def __enter__(self) -> FakeRecorder:
         self.entered = True
@@ -35,10 +39,16 @@ class FakeRecorder:
         return False
 
     def set_result(self, *args: Any, **kwargs: Any) -> None:
+        self.calls.append("set_result")
         self.set_result_calls.append(dict(kwargs))
 
     def set_call_error(self, error: Exception) -> None:
+        self.calls.append("set_call_error")
         self.set_call_error_calls.append(error)
+
+    def set_exec_error(self, error: Exception) -> None:
+        self.calls.append("set_exec_error")
+        self.set_exec_error_calls.append(error)
 
 
 class FakeClient:
@@ -79,10 +89,12 @@ def reset_module_state() -> Iterator[None]:
     _client._reset_for_tests()
     _state.reset_for_tests()
     _hooks._reset_for_tests()
+    _tags._reset_for_tests()
     yield
     _client._reset_for_tests()
     _state.reset_for_tests()
     _hooks._reset_for_tests()
+    _tags._reset_for_tests()
 
 
 @pytest.fixture

@@ -290,6 +290,7 @@ def test_session_end_does_not_flush_user_owned_providers(
 ) -> None:
     """When the host app owns the providers, the plugin must not flush them."""
     import agento11y
+    from opentelemetry import trace
 
     from grafana_agento11y_hermes import _client, _otel
     from tests.conftest import FakeClient
@@ -301,11 +302,15 @@ def test_session_end_does_not_flush_user_owned_providers(
         def force_flush(self, *_: Any, **__: Any) -> None:
             self.flush_calls += 1
 
+    # Globally installed, but by the host: _INSTALLED_*_PROVIDER stay None, so
+    # the plugin has no claim on it. Reaching for the module globals rather
+    # than set_tracer_provider, which is once-per-process.
     fake_provider = FakeProvider()
-    # _INSTALLED_*_PROVIDER stay None — represents user-owned provider path.
+    monkeypatch.setattr(trace, "_TRACER_PROVIDER", fake_provider, raising=False)
     monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
     monkeypatch.setattr(agento11y, "Client", lambda *a, **k: FakeClient())
     assert _client._get_client() is not None
+    assert trace.get_tracer_provider() is fake_provider
 
     _hooks.on_session_end()
     assert fake_provider.flush_calls == 0
@@ -806,12 +811,21 @@ def test_legacy_hermes_sigil_names_are_ignored(monkeypatch: pytest.MonkeyPatch) 
 
     import agento11y
 
-    def boom(*_: Any, **__: Any) -> Any:
-        raise AssertionError("Client must not be constructed when only legacy names are set")
+    # Counted out here, not asserted inside the factory: _client swallows every
+    # exception the constructor raises, an AssertionError included.
+    constructed: list[Any] = []
 
-    monkeypatch.setattr(agento11y, "Client", boom)
+    def factory(*args: Any, **kwargs: Any) -> Any:
+        constructed.append(args or kwargs)
+        from tests.conftest import FakeClient
+
+        return FakeClient()
+
+    monkeypatch.setattr(agento11y, "Client", factory)
 
     _hooks.on_pre_api_request(task_id="t", session_id="s", model="m", provider="p", messages=[], api_call_count=1)
+
+    assert constructed == []
 
 
 def test_client_config_uses_protocol_none_when_only_otel_configured(

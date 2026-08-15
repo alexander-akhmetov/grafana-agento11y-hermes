@@ -1,4 +1,4 @@
-"""Verify register(ctx) binds exactly the five expected hooks."""
+"""Verify register(ctx) binds exactly the expected hooks."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ EXPECTED_HOOKS = {
     "post_llm_call",
     "pre_api_request",
     "post_api_request",
+    "api_request_error",
     "post_tool_call",
     "on_session_end",
 }

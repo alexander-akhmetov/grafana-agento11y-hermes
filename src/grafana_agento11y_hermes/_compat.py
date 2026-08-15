@@ -8,8 +8,12 @@ unconfigured. Worse for the privacy knobs, where the default is the less
 private setting.
 
 This module copies each old name to its new name in ``os.environ`` before any
-config is read, then removes the old one so the SDK does not also warn about a
-variable we already honored. The new name always wins when both are set.
+config is read. The new name always wins when both are set.
+
+The old name stays. Hermes spawns a subprocess for tool calls, and a telemetry
+plugin must not change what the host passes to its children. The cost is that
+the SDK also warns about a variable we already honored, on top of the rename
+notice this module logs.
 
 The rename table comes from the SDK itself, so it cannot drift from what the
 SDK actually renamed. ``_EXTRA_RENAMES`` covers the few the SDK's table omits.
@@ -83,7 +87,6 @@ def apply_legacy_env(env: MutableMapping[str, str] | None = None) -> list[str]:
         value = target.get(old)
         if value is None:
             continue
-        del target[old]
         if target.get(new):
             logger.warning(
                 "grafana-agento11y-hermes: %s and %s are both set, using %s",

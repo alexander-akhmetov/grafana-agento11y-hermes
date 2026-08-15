@@ -12,22 +12,23 @@ import pytest
 from grafana_agento11y_hermes import _compat
 
 
-def test_old_name_is_promoted_and_removed() -> None:
+def test_old_name_is_copied_not_moved() -> None:
+    """Hermes tool subprocesses inherit the environment, so the old name stays."""
     env = {"SIGIL_AUTH_TOKEN": "glc_secret"}
 
     promoted = _compat.apply_legacy_env(env)
 
     assert promoted == ["SIGIL_AUTH_TOKEN"]
-    assert env == {"AGENTO11Y_AUTH_TOKEN": "glc_secret"}
+    assert env == {"SIGIL_AUTH_TOKEN": "glc_secret", "AGENTO11Y_AUTH_TOKEN": "glc_secret"}
 
 
-def test_new_name_wins_and_old_name_is_still_removed() -> None:
+def test_new_name_wins_when_both_are_set() -> None:
     env = {"SIGIL_AUTH_TOKEN": "old", "AGENTO11Y_AUTH_TOKEN": "new"}
 
     promoted = _compat.apply_legacy_env(env)
 
     assert promoted == []
-    assert env == {"AGENTO11Y_AUTH_TOKEN": "new"}
+    assert env == {"SIGIL_AUTH_TOKEN": "old", "AGENTO11Y_AUTH_TOKEN": "new"}
 
 
 @pytest.mark.parametrize(
@@ -50,7 +51,7 @@ def test_renames_cover_sdk_table_and_our_extras(old: str, new: str) -> None:
 
     _compat.apply_legacy_env(env)
 
-    assert env == {new: "v"}
+    assert env == {old: "v", new: "v"}
 
 
 def test_sdk_rename_table_is_reachable() -> None:
@@ -85,7 +86,7 @@ def test_os_environ_path_runs_once(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert first == ["SIGIL_AUTH_TOKEN"]
     assert os.environ["AGENTO11Y_AUTH_TOKEN"] == "glc_secret"
-    assert "SIGIL_AUTH_TOKEN" not in os.environ
+    assert os.environ["SIGIL_AUTH_TOKEN"] == "glc_secret"
 
     # A second call must not re-read the environment.
     monkeypatch.setenv("SIGIL_AUTH_TOKEN", "later")

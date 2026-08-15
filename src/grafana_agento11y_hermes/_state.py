@@ -64,12 +64,24 @@ _CONVO_STATE: dict[tuple[str, str], list[dict]] = {}
 # the running convo with synthesized assistant tool-call messages, which we
 # don't want included.
 _TURN_START_ASST_COUNT: dict[tuple[str, str], int] = {}
+# Last (model, provider) seen on a ``pre_api_request``, per session.
+# ``post_tool_call`` carries neither, so without this the tool duration metric
+# reports an empty ``gen_ai.request.model``.
+_SESSION_MODEL: dict[str, tuple[str, str]] = {}
 _LOCK = threading.Lock()
 
 
-def req_put(request_id: str, state: GenState) -> None:
+def req_put(request_id: str, state: GenState) -> GenState | None:
+    """Store state for a request, returning any state it displaced.
+
+    Hermes assigns ``api_request_id`` above its retry loop, so a second
+    ``pre_api_request`` for the same id means the first attempt was abandoned.
+    The caller closes what it gets back, otherwise that recorder leaks.
+    """
     with _LOCK:
+        previous = _REQ_STATE.get(request_id)
         _REQ_STATE[request_id] = state
+        return previous
 
 
 def req_pop(request_id: str) -> GenState | None:
@@ -147,9 +159,27 @@ def turn_start_asst_count_clear(key: tuple[str, str]) -> None:
         _TURN_START_ASST_COUNT.pop(key, None)
 
 
+def session_model_put(session_id: str, model: str, provider: str) -> None:
+    if not session_id:
+        return
+    with _LOCK:
+        _SESSION_MODEL[session_id] = (model, provider)
+
+
+def session_model_get(session_id: str) -> tuple[str, str]:
+    with _LOCK:
+        return _SESSION_MODEL.get(session_id or "", ("", ""))
+
+
+def session_model_clear(session_id: str) -> None:
+    with _LOCK:
+        _SESSION_MODEL.pop(session_id, None)
+
+
 def reset_for_tests() -> None:
     with _LOCK:
         _REQ_STATE.clear()
         _GEN_STATE.clear()
         _CONVO_STATE.clear()
         _TURN_START_ASST_COUNT.clear()
+        _SESSION_MODEL.clear()
