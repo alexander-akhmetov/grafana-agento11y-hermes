@@ -31,6 +31,7 @@ from ._hooks import (
     on_pre_api_request,
     on_pre_llm_call,
     on_session_end,
+    on_session_finalize,
 )
 
 
@@ -59,8 +60,14 @@ def register(ctx) -> None:
     ctx.register_hook("pre_api_request", on_pre_api_request)
     ctx.register_hook("post_api_request", on_post_api_request)
     ctx.register_hook("api_request_error", on_api_request_error)
+    #
+    # on_session_end fires per completed turn, so a turn that dies on a
+    # provider error never reaches it. on_session_finalize fires once at CLI
+    # exit either way, and is the only session hook the interactive failure
+    # path gets.
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("on_session_end", on_session_end)
+    ctx.register_hook("on_session_finalize", on_session_finalize)
 
 
 __all__ = [
@@ -72,4 +79,5 @@ __all__ = [
     "on_api_request_error",
     "on_post_tool_call",
     "on_session_end",
+    "on_session_finalize",
 ]

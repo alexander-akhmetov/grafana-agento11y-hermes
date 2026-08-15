@@ -12,6 +12,7 @@ EXPECTED_HOOKS = {
     "api_request_error",
     "post_tool_call",
     "on_session_end",
+    "on_session_finalize",
 }
 
 

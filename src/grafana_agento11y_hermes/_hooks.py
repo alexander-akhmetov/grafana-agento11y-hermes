@@ -511,6 +511,10 @@ def on_api_request_error(
     ``pre_api_request`` with the same ``api_request_id``, where displacement
     closes the abandoned attempt instead. The two compose: whichever fires
     first pops the state, and the other finds nothing.
+
+    Flushes before returning. On a one-shot run this hook is the last one that
+    fires: hermes emits no session-end hook when the turn dies on a provider
+    error, and exits through ``os._exit``, which skips the SDK's atexit flush.
     """
     if not api_request_id:
         return
@@ -532,6 +536,9 @@ def on_api_request_error(
             call_error=_errors.ProviderCallError(error_type, _as_optional_int(status_code) or payload_status),
             call_error_message=_redact.truncate_text(message, _ERROR_MAX_CHARS),
         )
+        cfg = _client._get_plugin_config()
+        if cfg is not None:
+            _client.flush_bounded(cfg.error_flush_timeout)
     except Exception as exc:
         logger.warning("grafana-agento11y-hermes: on_api_request_error failed: %s", exc)
 
@@ -845,12 +852,21 @@ def on_session_end(*, session_id: str = "", **_: Any) -> None:
     # flush() leaves the singleton client open so subsequent hermes sessions
     # in the same process keep working. shutdown() would set _closed=True and
     # every future start_generation/start_tool_execution call would raise.
-    client = _client._get_client(create_if_missing=False)
-    if client is not None:
-        try:
-            client.flush()
-        except Exception as exc:
-            logger.warning("grafana-agento11y-hermes: client.flush failed: %s", exc)
-    # Flush the BatchSpanProcessor we installed — Client.flush() drains the
-    # SDK's JSON export channel, but the OTel pipeline is independent.
-    _client._flush_otel()
+    # Unbounded on purpose: this hook fires while hermes still owns the loop,
+    # not on the way out, so the SDK's own timeouts are the right bound.
+    # _flush_channels also drains the OTel pipeline, which Client.flush() does
+    # not touch.
+    _client._flush_channels()
+
+
+def on_session_finalize(*, session_id: str = "", **_: Any) -> None:
+    """CLI exit. Same work as ``on_session_end``, which does not always fire.
+
+    Interactive hermes fires ``on_session_end`` per completed turn and
+    ``on_session_finalize`` once at exit. A turn that died on a provider error
+    reaches exit having fired only the latter, so registering both is what
+    makes the interactive failure path flush through a hook rather than through
+    the SDK's atexit handler. Both firing on a normal exit is harmless: the
+    second flush drains an empty queue.
+    """
+    on_session_end(session_id=session_id)

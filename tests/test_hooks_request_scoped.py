@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from typing import Any
 
 import pytest
 
-from grafana_agento11y_hermes import _errors, _hooks, _state
+from grafana_agento11y_hermes import _client, _errors, _hooks, _state
 
 CONVO = [
     {"role": "system", "content": "be helpful"},
@@ -411,3 +413,80 @@ def test_current_hermes_stops_maintaining_the_legacy_convo(patch_client: Any, en
     _hooks.on_post_tool_call(tool_name="read_file", session_id="sess-1", tool_call_id="call-1")
 
     assert _state.convo_get(("", "sess-1")) == []
+
+
+# --- flushing the failure path ---
+#
+# Hermes one-shot fires no session hook when a turn dies on a provider error,
+# and exits via os._exit (hermes_cli/main.py:_exit_after_oneshot), which skips
+# the SDK's atexit flush. The error hook is the last chance to export.
+
+
+def test_api_request_error_flushes(patch_client: Any, env_creds: None) -> None:
+    _pre()
+
+    _hooks.on_api_request_error(api_request_id="req-1", error="boom", status_code=500)
+
+    assert patch_client.flush_calls == 1
+
+
+def test_api_request_error_does_not_flush_for_an_unknown_id(patch_client: Any, env_creds: None) -> None:
+    """Nothing was closed, so there is nothing new to export."""
+    _pre()
+
+    _hooks.on_api_request_error(api_request_id="req-other", error="boom")
+
+    assert patch_client.flush_calls == 0
+
+
+def test_error_flush_timeout_zero_skips_the_flush(
+    patch_client: Any, env_creds: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _client._get_plugin_config()
+    assert cfg is not None
+    monkeypatch.setattr(cfg, "error_flush_timeout", 0.0)
+    _pre()
+
+    _hooks.on_api_request_error(api_request_id="req-1", error="boom", status_code=500)
+
+    assert patch_client._next_gen_recorder.exited, "the generation still closes"
+    assert patch_client.flush_calls == 0
+
+
+def test_a_hanging_flush_does_not_block_the_hook(
+    patch_client: Any, env_creds: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail open: a stuck exporter must not stall the hermes loop."""
+    release = threading.Event()
+
+    def hanging_flush() -> None:
+        release.wait(30)
+
+    monkeypatch.setattr(patch_client, "flush", hanging_flush)
+    cfg = _client._get_plugin_config()
+    assert cfg is not None
+    monkeypatch.setattr(cfg, "error_flush_timeout", 0.05)
+    _pre()
+
+    started = time.monotonic()
+    _hooks.on_api_request_error(api_request_id="req-1", error="boom", status_code=500)
+    elapsed = time.monotonic() - started
+    release.set()
+
+    assert elapsed < 5, f"hook waited {elapsed}s on a hanging flush"
+
+
+def test_session_finalize_flushes(patch_client: Any, env_creds: None) -> None:
+    """The only session hook the interactive failure path gets."""
+    _hooks.on_session_finalize(session_id="sess-1")
+
+    assert patch_client.flush_calls == 1
+
+
+def test_session_finalize_closes_a_still_open_generation(patch_client: Any, env_creds: None) -> None:
+    _pre()
+    rec = patch_client._next_gen_recorder
+
+    _hooks.on_session_finalize(session_id="sess-1")
+
+    assert rec.exited

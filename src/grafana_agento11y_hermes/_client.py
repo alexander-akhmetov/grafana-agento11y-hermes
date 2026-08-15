@@ -130,9 +130,54 @@ def _get_plugin_config() -> _config.PluginConfig | None:
     return _CONFIG
 
 
-def _flush_otel() -> None:
+def _flush_otel(timeout_millis: int | None = None) -> None:
     """Force-flush OTel providers we installed. No-op for host-owned providers."""
-    _otel.force_flush()
+    _otel.force_flush(timeout_millis)
+
+
+def _flush_channels(otel_timeout_millis: int | None = None) -> None:
+    """Drain both channels. ``Client.flush()`` covers generations only."""
+    client = _get_client(create_if_missing=False)
+    if client is not None:
+        try:
+            client.flush()
+        except Exception as exc:
+            logger.warning("grafana-agento11y-hermes: client.flush failed: %s", exc)
+    _flush_otel(otel_timeout_millis)
+
+
+def flush_bounded(timeout: float) -> bool:
+    """Flush both channels, giving up after ``timeout`` seconds.
+
+    For the paths that end the process without a session-end hook. Hermes
+    one-shot mode fires no session hook when a turn dies on a provider error,
+    and then exits through ``hermes_cli/main.py`` ``_exit_after_oneshot``, which
+    calls ``os._exit`` and so skips the SDK's own atexit flush. Without a flush
+    here the failed generation is recorded and then dropped.
+
+    The flush runs on a daemon thread and the wait is bounded, because a
+    blocking flush against an unreachable endpoint would otherwise stall the
+    hermes loop, which the fail-open invariant forbids. Losing the record on
+    timeout is the same outcome as not flushing at all.
+
+    Returns True when the flush finished inside the timeout.
+    """
+    if timeout <= 0:
+        return False
+
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            _flush_channels(otel_timeout_millis=int(timeout * 1000))
+        finally:
+            done.set()
+
+    threading.Thread(target=run, name="agento11y-hermes-flush", daemon=True).start()
+    if done.wait(timeout):
+        return True
+    logger.debug("grafana-agento11y-hermes: flush did not finish within %ss", timeout)
+    return False
 
 
 def _reset_for_tests() -> None:

@@ -195,7 +195,7 @@ def test_exporter_headers_suppressed_by_signal_env(monkeypatch: pytest.MonkeyPat
 
 
 def _capture_exporters(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """Patch the OTLP exporters with subclasses that record the headers kwarg."""
+    """Patch the OTLP exporters with subclasses that record their kwargs."""
     import opentelemetry.exporter.otlp.proto.http.metric_exporter as me
     import opentelemetry.exporter.otlp.proto.http.trace_exporter as te
 
@@ -204,11 +204,13 @@ def _capture_exporters(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     class CapSpan(te.OTLPSpanExporter):
         def __init__(self, *a: Any, **kw: Any) -> None:
             captured["span"] = kw.get("headers")
+            captured["span_endpoint"] = kw.get("endpoint")
             super().__init__(*a, **kw)
 
     class CapMetric(me.OTLPMetricExporter):
         def __init__(self, *a: Any, **kw: Any) -> None:
             captured["metric"] = kw.get("headers")
+            captured["metric_endpoint"] = kw.get("endpoint")
             super().__init__(*a, **kw)
 
     monkeypatch.setattr(te, "OTLPSpanExporter", CapSpan)
@@ -240,3 +242,59 @@ def test_user_headers_env_suppresses_fallback(otel_env, monkeypatch: pytest.Monk
     assert _otel.setup_if_needed(cfg) is True
     assert captured["span"] is None
     assert captured["metric"] is None
+
+
+# --- branded OTLP endpoint ---
+
+
+def test_standard_endpoint_is_left_to_the_exporters(otel_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With OTEL_EXPORTER_OTLP_ENDPOINT set, no endpoint kwarg is passed."""
+    captured = _capture_exporters(monkeypatch)
+
+    assert _otel.setup_if_needed(_make_cfg()) is True
+    assert captured["span_endpoint"] is None
+    assert captured["metric_endpoint"] is None
+
+
+def test_branded_endpoint_is_passed_per_signal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The branded alias is the one name the exporters cannot read themselves."""
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    monkeypatch.setenv("AGENTO11Y_OTEL_EXPORTER_OTLP_ENDPOINT", "https://otlp.example/otlp")
+    captured = _capture_exporters(monkeypatch)
+
+    cfg = _config.load()
+    assert cfg.otel_configured is True
+    assert _otel.setup_if_needed(cfg) is True
+    assert captured["span_endpoint"] == "https://otlp.example/otlp/v1/traces"
+    assert captured["metric_endpoint"] == "https://otlp.example/otlp/v1/metrics"
+
+
+@pytest.mark.parametrize(
+    ("base", "expected"),
+    [
+        ("https://otlp.example/otlp", "https://otlp.example/otlp/v1/traces"),
+        ("https://otlp.example/otlp/", "https://otlp.example/otlp/v1/traces"),
+        ("https://otlp.example/otlp///", "https://otlp.example/otlp/v1/traces"),
+    ],
+)
+def test_signal_endpoint_normalizes_trailing_slashes(base: str, expected: str) -> None:
+    assert _otel._signal_endpoint(base, "/v1/traces") == expected
+
+
+def test_auth_source_reflects_what_was_passed() -> None:
+    """The log suffix tracks the headers kwarg, not whether credentials exist."""
+    assert _otel._auth_source(True) == " (auth from AGENTO11Y_AUTH_*)"
+    assert _otel._auth_source(False) == ""
+
+
+def test_install_reports_derived_auth_only_when_headers_are_used(otel_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """otel_env sets OTEL_EXPORTER_OTLP_HEADERS, so the derived headers lose."""
+    _capture_exporters(monkeypatch)
+    cfg = _config.PluginConfig(otel_auto=True, otel_configured=True, otel_auth_headers=dict(_FALLBACK))
+
+    _, derived = _otel._install_tracer_provider(cfg)
+    assert derived is False
+
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_HEADERS", raising=False)
+    _, derived = _otel._install_tracer_provider(cfg)
+    assert derived is True

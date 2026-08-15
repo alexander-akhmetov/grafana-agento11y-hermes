@@ -9,7 +9,10 @@ are owned by the SDK's ``Client()`` constructor. See the canonical
 OTel exporter and resource resolution follow the standard OpenTelemetry env
 schema (``OTEL_EXPORTER_OTLP_ENDPOINT``, ``OTEL_EXPORTER_OTLP_HEADERS``,
 ``OTEL_SERVICE_NAME``, ``OTEL_RESOURCE_ATTRIBUTES``); the OTLP HTTP exporters
-read these themselves.
+read these themselves. The one exception is
+``AGENTO11Y_OTEL_EXPORTER_OTLP_ENDPOINT``, the branded alias the sibling
+plugins accept, which this module resolves into ``otel_endpoint_override`` for
+``_otel.py`` to pass on.
 
 This module resolves plugin-specific knobs under the ``AGENTO11Y_HERMES_*``
 prefix (matching the ``AGENTO11Y_PI_*`` / ``AGENTO11Y_COPILOT_*`` convention
@@ -19,8 +22,8 @@ decisions in ``_client.py`` and ``_otel.py``.
 As a convenience it also derives OTLP auth headers from the generations
 basic-auth pair (``AGENTO11Y_AUTH_TENANT_ID`` + ``AGENTO11Y_AUTH_TOKEN``).
 ``_otel.py`` applies these only when the user has not set
-``OTEL_EXPORTER_OTLP_HEADERS`` (nor the per-signal overrides). The endpoint
-still comes from ``OTEL_EXPORTER_OTLP_ENDPOINT``.
+``OTEL_EXPORTER_OTLP_HEADERS`` (nor the per-signal overrides). Auth is all they
+cover; the endpoint comes from the two endpoint vars above.
 """
 
 from __future__ import annotations
@@ -40,8 +43,10 @@ class PluginConfig:
     sample_rate: float = 1.0
     max_chars: int = 12000
     otel_auto: bool = True
+    error_flush_timeout: float = 2.0
     generations_configured: bool = False
     otel_configured: bool = False
+    otel_endpoint_override: str = ""
     otel_auth_headers: dict[str, str] = field(default_factory=dict)
     export_headers: dict[str, str] = field(default_factory=dict)
 
@@ -86,8 +91,25 @@ def _generations_configured() -> bool:
     return bool(mode) and mode != "none"
 
 
+def _otel_endpoint_override() -> str:
+    """The branded OTLP endpoint, but only when the standard env is unset.
+
+    ``AGENTO11Y_OTEL_EXPORTER_OTLP_ENDPOINT`` is the branded alias the sibling
+    plugins accept, so setups carrying only that name reach us too. The OTLP
+    exporters know the standard name only, so such an install would otherwise
+    run with the OTel channel silently off.
+
+    Returned separately from ``otel_configured`` because ``_otel.py`` has to
+    pass this value to the exporters explicitly. Empty when the standard env is
+    set, so the exporters keep reading it themselves.
+    """
+    if _env("OTEL_EXPORTER_OTLP_ENDPOINT"):
+        return ""
+    return _env("AGENTO11Y_OTEL_EXPORTER_OTLP_ENDPOINT")
+
+
 def _otel_configured() -> bool:
-    return bool(_env("OTEL_EXPORTER_OTLP_ENDPOINT"))
+    return bool(_env("OTEL_EXPORTER_OTLP_ENDPOINT") or _env("AGENTO11Y_OTEL_EXPORTER_OTLP_ENDPOINT"))
 
 
 def _parse_kv_csv(raw: str) -> dict[str, str]:
@@ -146,8 +168,10 @@ def load() -> PluginConfig:
         sample_rate=_env_float("AGENTO11Y_HERMES_SAMPLE_RATE", 1.0),
         max_chars=_env_int("AGENTO11Y_HERMES_MAX_CHARS", 12000),
         otel_auto=_env_bool("AGENTO11Y_HERMES_OTEL_AUTO", True),
+        error_flush_timeout=_env_float("AGENTO11Y_HERMES_ERROR_FLUSH_TIMEOUT", 2.0),
         generations_configured=_generations_configured(),
         otel_configured=_otel_configured(),
+        otel_endpoint_override=_otel_endpoint_override(),
         otel_auth_headers=_otel_auth_headers(),
         export_headers=_export_headers(),
     )
