@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.0](https://github.com/alexander-akhmetov/grafana-agento11y-hermes/compare/0.5.0...0.6.0) - 2026-08-15
+
+- Publish releases to PyPI
+- Point setup docs at the Agent Observability setup page
+- Switch to the agento11y SDK and rename to grafana-agento11y-hermes
+
 ## [0.5.0](https://github.com/alexander-akhmetov/grafana-agento11y-hermes/compare/0.4.0...0.5.0) - 2026-08-15
 
 - Manage the project with uv and take the version from git tags
