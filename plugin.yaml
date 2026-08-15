@@ -2,7 +2,7 @@
 # distribution metadata, not from here, so a number in this file only goes
 # stale. See hermes_cli/plugins.py, discover_entrypoint_manifests.
 name: agento11y
-description: "Grafana Agent Observability for Hermes. Records LLM calls and tool usage as generations and OTel traces+metrics."
+description: "Unofficial Grafana Agent Observability plugin for Hermes. Records LLM calls and tool usage as generations and OTel traces+metrics."
 author: Alexander Akhmetov
 requires_env:
   - name: AGENTO11Y_ENDPOINT

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "grafana-agento11y-hermes"
 dynamic = ["version"]
-description = "Grafana Agent Observability plugin for Hermes Agent. Records LLM calls and tool executions as generations and OTel traces+metrics."
+description = "Unofficial Grafana Agent Observability plugin for Hermes Agent. Records LLM calls and tool executions as generations and OTel traces+metrics."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Alexander Akhmetov" }]
