@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/alexander-akhmetov/grafana-agento11y-hermes/compare/0.7.0...0.8.0) - 2026-08-15
+
+- Reword the 0.2.0 changelog entry for the llms.txt token step
+- Flush failed generations before hermes exits
+- Update README.md
+- build(deps-dev): update hatch-vcs requirement from >=0.4 to >=0.5.0 (#5)
+
 ## [0.6.0](https://github.com/alexander-akhmetov/grafana-agento11y-hermes/compare/0.5.0...0.6.0) - 2026-08-15
 
 - Publish releases to PyPI
