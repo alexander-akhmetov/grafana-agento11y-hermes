@@ -4,10 +4,10 @@ Ported from the langfuse plugin's ``_safe_value`` family. Applies a depth limit
 of 4, caps dict/list size at 50 entries, and truncates strings to a
 caller-supplied ``max_chars``. No PII regex — structural shaping only. The aim
 is to bound the size and shape of arbitrary tool I/O before it reaches the
-Sigil exporter.
+generation exporter.
 
 Callers thread their resolved plugin ``max_chars`` (from
-``SIGIL_HERMES_MAX_CHARS``) into every entry call. There is no env fallback
+``AGENTO11Y_HERMES_MAX_CHARS``) into every entry call. There is no env fallback
 inside this module.
 """
 

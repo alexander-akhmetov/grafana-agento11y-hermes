@@ -61,4 +61,4 @@ jobs:
         run: make test
 
       - name: Import sanity check
-        run: uv run python -c "import hermes_plugin_sigil; assert callable(hermes_plugin_sigil.register)"
+        run: uv run python -c "import grafana_agento11y_hermes as p; assert callable(p.register)"

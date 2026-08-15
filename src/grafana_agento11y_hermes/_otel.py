@@ -1,14 +1,14 @@
 """OpenTelemetry TracerProvider + MeterProvider auto-setup.
 
-The Sigil SDK does not own OTel — applications must install providers. This
-plugin acts as the application setup for hermes users who haven't wired OTel
+The SDK does not own OTel; applications must install providers. This plugin
+acts as the application setup for hermes users who haven't wired OTel
 themselves.
 
 OTel exporter and resource configuration follow the OpenTelemetry env-var
 schema (``OTEL_EXPORTER_OTLP_ENDPOINT``, ``OTEL_EXPORTER_OTLP_HEADERS``,
 ``OTEL_SERVICE_NAME``, ``OTEL_RESOURCE_ATTRIBUTES``). The OTLP HTTP exporters
 read these themselves; the plugin only fills in ``service.name=hermes`` when
-the user hasn't set one, and the Sigil basic-auth headers derived in
+the user hasn't set one, and the generations basic-auth headers derived in
 ``_config`` when no OTLP header env is set (endpoint still comes from
 ``OTEL_EXPORTER_OTLP_ENDPOINT``).
 
@@ -64,7 +64,7 @@ def _build_resource():
 def _exporter_headers(signal_env: str, fallback_headers: dict[str, str]) -> dict[str, str] | None:
     """Headers kwarg for an OTLP exporter, or ``None`` to let it read env itself.
 
-    Returns the Sigil-derived fallback only when the user set neither the
+    Returns the credentials-derived fallback only when the user set neither the
     generic ``OTEL_EXPORTER_OTLP_HEADERS`` nor the signal-specific override
     (``signal_env``). Passing ``headers=`` would otherwise clobber the user's
     explicit env config, since the exporter's kwarg wins over the env var.
@@ -104,7 +104,7 @@ def _install_meter_provider(fallback_headers: dict[str, str]) -> Any:
     return MeterProvider(resource=_build_resource(), metric_readers=[reader])
 
 
-def setup_if_needed(plugin_cfg: _config.SigilPluginConfig) -> bool:
+def setup_if_needed(plugin_cfg: _config.PluginConfig) -> bool:
     """Install TracerProvider and MeterProvider when missing.
 
     Returns True when at least one provider is in place after the call (host
@@ -140,7 +140,7 @@ def setup_if_needed(plugin_cfg: _config.SigilPluginConfig) -> bool:
     if not plugin_cfg.otel_auto:
         if needs_tracer or needs_meter:
             logger.warning(
-                "hermes-plugin-sigil: SIGIL_HERMES_OTEL_AUTO=false and no provider is configured "
+                "grafana-agento11y-hermes: AGENTO11Y_HERMES_OTEL_AUTO=false and no provider is configured "
                 "for %s — telemetry is disabled.",
                 "TracerProvider+MeterProvider"
                 if (needs_tracer and needs_meter)
@@ -150,19 +150,19 @@ def setup_if_needed(plugin_cfg: _config.SigilPluginConfig) -> bool:
         return not (needs_tracer and needs_meter)
 
     try:
-        auth_src = " (auth from SIGIL_AUTH_*)" if plugin_cfg.otel_auth_headers else ""
+        auth_src = " (auth from AGENTO11Y_AUTH_*)" if plugin_cfg.otel_auth_headers else ""
         if needs_tracer:
             provider = _install_tracer_provider(plugin_cfg.otel_auth_headers)
             trace.set_tracer_provider(provider)
             _INSTALLED_TRACER_PROVIDER = provider
-            logger.info("hermes-plugin-sigil: installed TracerProvider with OTLP HTTP exporter%s", auth_src)
+            logger.info("grafana-agento11y-hermes: installed TracerProvider with OTLP HTTP exporter%s", auth_src)
         if needs_meter:
             provider = _install_meter_provider(plugin_cfg.otel_auth_headers)
             metrics.set_meter_provider(provider)
             _INSTALLED_METER_PROVIDER = provider
-            logger.info("hermes-plugin-sigil: installed MeterProvider with OTLP HTTP exporter%s", auth_src)
+            logger.info("grafana-agento11y-hermes: installed MeterProvider with OTLP HTTP exporter%s", auth_src)
     except Exception as exc:
-        logger.warning("hermes-plugin-sigil: failed to set up OTel providers: %s", exc)
+        logger.warning("grafana-agento11y-hermes: failed to set up OTel providers: %s", exc)
         _SETUP_DONE = True
         return False
 
@@ -184,12 +184,12 @@ def force_flush() -> None:
         try:
             _INSTALLED_TRACER_PROVIDER.force_flush()
         except Exception as exc:
-            logger.warning("hermes-plugin-sigil: TracerProvider force_flush failed: %s", exc)
+            logger.warning("grafana-agento11y-hermes: TracerProvider force_flush failed: %s", exc)
     if _INSTALLED_METER_PROVIDER is not None:
         try:
             _INSTALLED_METER_PROVIDER.force_flush()
         except Exception as exc:
-            logger.warning("hermes-plugin-sigil: MeterProvider force_flush failed: %s", exc)
+            logger.warning("grafana-agento11y-hermes: MeterProvider force_flush failed: %s", exc)
 
 
 def _reset_for_tests() -> None:

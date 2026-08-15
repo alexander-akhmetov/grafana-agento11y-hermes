@@ -21,7 +21,7 @@ updates:
           - "opentelemetry-*"
     ignore:
       # A major or minor bump needs the hook code reviewed against the new SDK.
-      - dependency-name: "sigil-sdk"
+      - dependency-name: "agento11y"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: "github-actions"
