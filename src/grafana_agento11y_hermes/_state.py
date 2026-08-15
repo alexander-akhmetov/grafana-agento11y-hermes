@@ -1,15 +1,21 @@
 """In-flight recorder state.
 
-Generations are keyed by ``(task_id, session_id, api_call_count)`` so we can
-correlate the matching pre/post hook pair.
+Two maps, one per pairing strategy.
 
-Generation state carries the parsed input messages alongside the recorder —
-hermes's ``post_api_request`` hook does not reliably pass ``messages`` again
-(matching the bundled langfuse plugin), so we capture them once at pre-time
-and pass them back to ``set_result`` at post-time. Otherwise the SDK's
-``set_result(input=[], output=...)`` would clear the input we seeded.
+``_REQ_STATE`` is the current path. Hermes v2026.6.5 and later pass
+``api_request_id`` to both ``pre_api_request`` and ``post_api_request``, which
+is a unique id per API call, so the pre/post pair needs no inference.
 
-Tool executions don't need cross-hook state — we only register
+``_GEN_STATE`` and the convo maps below serve the legacy path, for hermes
+builds older than v2026.6.5 that send no ``api_request_id``. There the pair is
+inferred from ``(task_id, session_id, api_call_count)``, and output content has
+to be recovered later from ``post_llm_call``. Delete everything marked LEGACY
+when support for pre-v2026.6.5 hermes is dropped.
+
+Generation state carries the parsed input messages alongside the recorder,
+because ``set_result(input=[], output=...)`` would clear the input we seeded.
+
+Tool executions don't need cross-hook state. We only register
 ``post_tool_call``, do all the work there, and close immediately.
 """
 
@@ -26,9 +32,11 @@ class GenState:
     recorder: Any
     input_messages: list = field(default_factory=list)
     system_prompt: str = ""
-    # Partial fields filled in by post_api_request — actual ``set_result`` is
-    # deferred until post_llm_call so we can pair each call with its assistant
-    # message from the final ``conversation_history``.
+    # Set on the current path so a session drain can find this request's state.
+    session_id: str = ""
+    # LEGACY: partial fields filled in by post_api_request when ``set_result``
+    # is deferred to post_llm_call to recover the assistant message. The
+    # current path closes in post_api_request and never reads these.
     usage: Any = None
     finish_reason: str = ""
     response_model: str = ""
@@ -40,6 +48,9 @@ class GenState:
     api_duration: float | None = None
 
 
+# Current path: api_request_id -> state.
+_REQ_STATE: dict[str, GenState] = {}
+# LEGACY: inferred key for hermes builds without api_request_id.
 _GEN_STATE: dict[tuple[str, str, int], GenState] = {}
 # Per-(task_id, session_id) running hermes-shaped message list. Populated by
 # ``pre_llm_call`` from ``conversation_history`` and extended in-place as
@@ -54,6 +65,25 @@ _CONVO_STATE: dict[tuple[str, str], list[dict]] = {}
 # don't want included.
 _TURN_START_ASST_COUNT: dict[tuple[str, str], int] = {}
 _LOCK = threading.Lock()
+
+
+def req_put(request_id: str, state: GenState) -> None:
+    with _LOCK:
+        _REQ_STATE[request_id] = state
+
+
+def req_pop(request_id: str) -> GenState | None:
+    with _LOCK:
+        return _REQ_STATE.pop(request_id, None)
+
+
+def req_pop_session(session_id: str) -> list[GenState]:
+    """Pop every request-keyed state for a session, for interrupt cleanup."""
+    with _LOCK:
+        matching = [(k, v) for k, v in _REQ_STATE.items() if v.session_id == session_id]
+        for k, _ in matching:
+            del _REQ_STATE[k]
+    return [v for _, v in matching]
 
 
 def gen_put(key: tuple[str, str, int], state: GenState) -> None:
@@ -119,6 +149,7 @@ def turn_start_asst_count_clear(key: tuple[str, str]) -> None:
 
 def reset_for_tests() -> None:
     with _LOCK:
+        _REQ_STATE.clear()
         _GEN_STATE.clear()
         _CONVO_STATE.clear()
         _TURN_START_ASST_COUNT.clear()

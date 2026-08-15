@@ -12,7 +12,7 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.trace import ProxyTracerProvider
 
-from hermes_plugin_sigil import _client, _config, _otel
+from grafana_agento11y_hermes import _client, _config, _otel
 
 
 @pytest.fixture(autouse=True)
@@ -58,8 +58,8 @@ def otel_env(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _make_cfg(*, otel_auto: bool = True, otel_configured: bool = True) -> _config.SigilPluginConfig:
-    return _config.SigilPluginConfig(
+def _make_cfg(*, otel_auto: bool = True, otel_configured: bool = True) -> _config.PluginConfig:
+    return _config.PluginConfig(
         otel_auto=otel_auto,
         otel_configured=otel_configured,
     )
@@ -226,7 +226,7 @@ def test_fallback_headers_passed_to_exporters(monkeypatch: pytest.MonkeyPatch) -
         monkeypatch.delenv(var, raising=False)
     captured = _capture_exporters(monkeypatch)
 
-    cfg = _config.SigilPluginConfig(otel_auto=True, otel_configured=True, otel_auth_headers=dict(_FALLBACK))
+    cfg = _config.PluginConfig(otel_auto=True, otel_configured=True, otel_auth_headers=dict(_FALLBACK))
     assert _otel.setup_if_needed(cfg) is True
     assert captured["span"] == _FALLBACK
     assert captured["metric"] == _FALLBACK
@@ -236,7 +236,7 @@ def test_user_headers_env_suppresses_fallback(otel_env, monkeypatch: pytest.Monk
     """otel_env sets OTEL_EXPORTER_OTLP_HEADERS, so the fallback must not apply."""
     captured = _capture_exporters(monkeypatch)
 
-    cfg = _config.SigilPluginConfig(otel_auto=True, otel_configured=True, otel_auth_headers=dict(_FALLBACK))
+    cfg = _config.PluginConfig(otel_auto=True, otel_configured=True, otel_auth_headers=dict(_FALLBACK))
     assert _otel.setup_if_needed(cfg) is True
     assert captured["span"] is None
     assert captured["metric"] is None

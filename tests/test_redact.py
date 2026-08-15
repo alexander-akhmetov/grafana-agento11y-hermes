@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from hermes_plugin_sigil import _redact
+from grafana_agento11y_hermes import _redact
 
 
 def test_truncate_long_string_uses_caller_max_chars() -> None:

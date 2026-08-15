@@ -1,25 +1,26 @@
-"""Plugin-specific configuration for hermes-plugin-sigil.
+"""Plugin-specific configuration for grafana-agento11y-hermes.
 
 Transport, auth, agent identity, debug, and content-capture-mode resolution
-are owned by the Sigil SDK's ``Client()`` constructor — see the canonical
-``SIGIL_*`` schema (``SIGIL_ENDPOINT``, ``SIGIL_PROTOCOL``, ``SIGIL_AUTH_*``,
-``SIGIL_AGENT_NAME``, ``SIGIL_DEBUG``, ``SIGIL_CONTENT_CAPTURE_MODE``).
+are owned by the SDK's ``Client()`` constructor. See the canonical
+``AGENTO11Y_*`` schema (``AGENTO11Y_ENDPOINT``, ``AGENTO11Y_PROTOCOL``,
+``AGENTO11Y_AUTH_*``, ``AGENTO11Y_AGENT_NAME``, ``AGENTO11Y_DEBUG``,
+``AGENTO11Y_CONTENT_CAPTURE_MODE``).
 
 OTel exporter and resource resolution follow the standard OpenTelemetry env
 schema (``OTEL_EXPORTER_OTLP_ENDPOINT``, ``OTEL_EXPORTER_OTLP_HEADERS``,
 ``OTEL_SERVICE_NAME``, ``OTEL_RESOURCE_ATTRIBUTES``); the OTLP HTTP exporters
 read these themselves.
 
-This module resolves plugin-specific knobs under the ``SIGIL_HERMES_*``
-prefix (matching the ``SIGIL_CC_*`` / ``SIGIL_PI_*`` convention used by sibling
-plugins) and tracks two presence flags driving channel decisions in
-``_client.py`` and ``_otel.py``.
+This module resolves plugin-specific knobs under the ``AGENTO11Y_HERMES_*``
+prefix (matching the ``AGENTO11Y_PI_*`` / ``AGENTO11Y_COPILOT_*`` convention
+used by sibling plugins) and tracks two presence flags driving channel
+decisions in ``_client.py`` and ``_otel.py``.
 
-As a convenience it also derives OTLP auth headers from the Sigil basic-auth
-pair (``SIGIL_AUTH_TENANT_ID`` + ``SIGIL_AUTH_TOKEN``). ``_otel.py`` applies
-these only when the user has not set ``OTEL_EXPORTER_OTLP_HEADERS`` (nor the
-per-signal overrides) — the endpoint still comes from
-``OTEL_EXPORTER_OTLP_ENDPOINT``.
+As a convenience it also derives OTLP auth headers from the generations
+basic-auth pair (``AGENTO11Y_AUTH_TENANT_ID`` + ``AGENTO11Y_AUTH_TOKEN``).
+``_otel.py`` applies these only when the user has not set
+``OTEL_EXPORTER_OTLP_HEADERS`` (nor the per-signal overrides). The endpoint
+still comes from ``OTEL_EXPORTER_OTLP_ENDPOINT``.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
-class SigilPluginConfig:
+class PluginConfig:
     """Resolved plugin-specific configuration."""
 
     sample_rate: float = 1.0
@@ -42,7 +43,7 @@ class SigilPluginConfig:
     generations_configured: bool = False
     otel_configured: bool = False
     otel_auth_headers: dict[str, str] = field(default_factory=dict)
-    sigil_headers: dict[str, str] = field(default_factory=dict)
+    export_headers: dict[str, str] = field(default_factory=dict)
 
 
 def _env(name: str) -> str:
@@ -63,7 +64,7 @@ def _env_float(name: str, default: float) -> float:
     try:
         return float(raw)
     except ValueError:
-        logger.warning("hermes-plugin-sigil: invalid %s=%r, using default %s", name, raw, default)
+        logger.warning("grafana-agento11y-hermes: invalid %s=%r, using default %s", name, raw, default)
         return default
 
 
@@ -74,14 +75,14 @@ def _env_int(name: str, default: int) -> int:
     try:
         return int(raw)
     except ValueError:
-        logger.warning("hermes-plugin-sigil: invalid %s=%r, using default %s", name, raw, default)
+        logger.warning("grafana-agento11y-hermes: invalid %s=%r, using default %s", name, raw, default)
         return default
 
 
 def _generations_configured() -> bool:
-    if _env("SIGIL_AUTH_TOKEN"):
+    if _env("AGENTO11Y_AUTH_TOKEN"):
         return True
-    mode = _env("SIGIL_AUTH_MODE").lower()
+    mode = _env("AGENTO11Y_AUTH_MODE").lower()
     return bool(mode) and mode != "none"
 
 
@@ -103,50 +104,50 @@ def _parse_kv_csv(raw: str) -> dict[str, str]:
     return out
 
 
-def _sigil_headers() -> dict[str, str]:
-    """Extra generation-export headers from ``SIGIL_HEADERS``.
+def _export_headers() -> dict[str, str]:
+    """Extra generation-export headers from ``AGENTO11Y_HEADERS``.
 
-    The SDK reads ``SIGIL_HEADERS`` only when no headers are set on the config.
-    Since the plugin sets ``GenerationExportConfig.headers`` explicitly to inject
-    its User-Agent (see ``_client``), that lookup is suppressed — so we mirror it
-    here and merge the result back in.
+    The SDK reads ``AGENTO11Y_HEADERS`` only when no headers are set on the
+    config. Since the plugin sets ``GenerationExportConfig.headers`` explicitly
+    to inject its User-Agent (see ``_client``), that lookup is suppressed, so we
+    mirror it here and merge the result back in.
     """
-    return _parse_kv_csv(_env("SIGIL_HEADERS"))
+    return _parse_kv_csv(_env("AGENTO11Y_HEADERS"))
 
 
 def _otel_auth_headers() -> dict[str, str]:
-    """Basic-auth headers derived from the Sigil credentials, for OTLP fallback.
+    """Basic-auth headers derived from the generations credentials, for OTLP.
 
     Mirrors the SDK's ``basic`` mode: ``Authorization: Basic base64(tenant:token)``
     plus ``X-Scope-OrgID: tenant``. ``_otel.py`` uses these only when the user has
     not set ``OTEL_EXPORTER_OTLP_HEADERS`` (nor the per-signal overrides).
 
     Returns an empty dict when either value is missing, or when
-    ``SIGIL_AUTH_MODE`` is explicitly ``bearer`` (the token is then a bearer
-    token, not a basic password — deriving basic auth from it would be wrong).
+    ``AGENTO11Y_AUTH_MODE`` is explicitly ``bearer``. The token is then a bearer
+    token, not a basic password, so deriving basic auth from it would be wrong.
     """
-    if _env("SIGIL_AUTH_MODE").lower() == "bearer":
+    if _env("AGENTO11Y_AUTH_MODE").lower() == "bearer":
         return {}
-    tenant = _env("SIGIL_AUTH_TENANT_ID")
-    token = _env("SIGIL_AUTH_TOKEN")
+    tenant = _env("AGENTO11Y_AUTH_TENANT_ID")
+    token = _env("AGENTO11Y_AUTH_TOKEN")
     if not (tenant and token):
         return {}
     creds = base64.b64encode(f"{tenant}:{token}".encode()).decode()
     return {"Authorization": f"Basic {creds}", "X-Scope-OrgID": tenant}
 
 
-def load() -> SigilPluginConfig:
+def load() -> PluginConfig:
     """Resolve plugin-specific env vars to a config.
 
-    Always returns a config — channel decisions are driven by
+    Always returns a config. Channel decisions are driven by
     ``generations_configured`` / ``otel_configured`` rather than ``None``.
     """
-    return SigilPluginConfig(
-        sample_rate=_env_float("SIGIL_HERMES_SAMPLE_RATE", 1.0),
-        max_chars=_env_int("SIGIL_HERMES_MAX_CHARS", 12000),
-        otel_auto=_env_bool("SIGIL_HERMES_OTEL_AUTO", True),
+    return PluginConfig(
+        sample_rate=_env_float("AGENTO11Y_HERMES_SAMPLE_RATE", 1.0),
+        max_chars=_env_int("AGENTO11Y_HERMES_MAX_CHARS", 12000),
+        otel_auto=_env_bool("AGENTO11Y_HERMES_OTEL_AUTO", True),
         generations_configured=_generations_configured(),
         otel_configured=_otel_configured(),
         otel_auth_headers=_otel_auth_headers(),
-        sigil_headers=_sigil_headers(),
+        export_headers=_export_headers(),
     )

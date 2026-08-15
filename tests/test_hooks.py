@@ -1,6 +1,6 @@
 """Hook payload-shaping and lifecycle tests.
 
-The fake Sigil client records every ``start_generation`` / ``start_tool_execution``
+The fake SDK client records every ``start_generation`` / ``start_tool_execution``
 / ``shutdown`` call. The tests assert that the plugin produces correctly
 shaped payloads and that recorders are cleaned up after the post-hooks fire.
 """
@@ -10,9 +10,9 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from sigil_sdk import GenerationStart, MessageRole, PartKind, ToolExecutionStart
+from agento11y import GenerationStart, MessageRole, PartKind, ToolExecutionStart
 
-from hermes_plugin_sigil import _hooks, _state
+from grafana_agento11y_hermes import _hooks, _state
 
 
 def _sample_messages() -> list[dict]:
@@ -161,13 +161,13 @@ def test_post_tool_call_records_full_round_trip(patch_client) -> None:
 
 
 def test_missing_credentials_makes_handlers_noop(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No SIGIL_* creds set → no Client constructed, all hooks no-op."""
+    """No AGENTO11Y_* creds set means no Client constructed and all hooks no-op."""
     for name in (
-        "SIGIL_ENDPOINT",
-        "SIGIL_PROTOCOL",
-        "SIGIL_AUTH_MODE",
-        "SIGIL_AUTH_TENANT_ID",
-        "SIGIL_AUTH_TOKEN",
+        "AGENTO11Y_ENDPOINT",
+        "AGENTO11Y_PROTOCOL",
+        "AGENTO11Y_AUTH_MODE",
+        "AGENTO11Y_AUTH_TENANT_ID",
+        "AGENTO11Y_AUTH_TOKEN",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -184,13 +184,13 @@ def test_missing_credentials_makes_handlers_noop(monkeypatch: pytest.MonkeyPatch
 
     constructed: list[Any] = []
 
-    import sigil_sdk
+    import agento11y
 
     def boom(*_: Any, **__: Any) -> Any:
         constructed.append(True)
         raise AssertionError("Client should not be constructed when creds missing")
 
-    monkeypatch.setattr(sigil_sdk, "Client", boom)
+    monkeypatch.setattr(agento11y, "Client", boom)
 
     # All hooks should silently no-op
     _hooks.on_pre_api_request(task_id="t", session_id="s", model="m", provider="p", messages=[], api_call_count=1)
@@ -202,9 +202,9 @@ def test_missing_credentials_makes_handlers_noop(monkeypatch: pytest.MonkeyPatch
 
 def test_client_init_failure_is_cached(monkeypatch: pytest.MonkeyPatch, env_creds: None) -> None:
     """Construction error → handlers swallow, subsequent calls don't retry."""
-    import sigil_sdk
+    import agento11y
 
-    from hermes_plugin_sigil import _otel
+    from grafana_agento11y_hermes import _otel
 
     monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
 
@@ -214,7 +214,7 @@ def test_client_init_failure_is_cached(monkeypatch: pytest.MonkeyPatch, env_cred
         call_count["n"] += 1
         raise RuntimeError("unreachable endpoint")
 
-    monkeypatch.setattr(sigil_sdk, "Client", boom)
+    monkeypatch.setattr(agento11y, "Client", boom)
 
     _hooks.on_pre_api_request(task_id="t", session_id="s", model="m", provider="p", messages=[], api_call_count=1)
     _hooks.on_post_tool_call(tool_name="x", task_id="t", session_id="s", tool_call_id="tc")
@@ -258,9 +258,9 @@ def test_session_end_force_flushes_installed_providers(
     env_creds: None,
 ) -> None:
     """If the plugin installed providers, on_session_end force-flushes them."""
-    import sigil_sdk
+    import agento11y
 
-    from hermes_plugin_sigil import _client, _otel
+    from grafana_agento11y_hermes import _client, _otel
     from tests.conftest import FakeClient
 
     class FakeProvider:
@@ -275,7 +275,7 @@ def test_session_end_force_flushes_installed_providers(
     monkeypatch.setattr(_otel, "_INSTALLED_TRACER_PROVIDER", fake_tracer, raising=False)
     monkeypatch.setattr(_otel, "_INSTALLED_METER_PROVIDER", fake_meter, raising=False)
     monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
-    monkeypatch.setattr(sigil_sdk, "Client", lambda *a, **k: FakeClient())
+    monkeypatch.setattr(agento11y, "Client", lambda *a, **k: FakeClient())
 
     # Force client init
     assert _client._get_client() is not None
@@ -289,9 +289,9 @@ def test_session_end_does_not_flush_user_owned_providers(
     env_creds: None,
 ) -> None:
     """When the host app owns the providers, the plugin must not flush them."""
-    import sigil_sdk
+    import agento11y
 
-    from hermes_plugin_sigil import _client, _otel
+    from grafana_agento11y_hermes import _client, _otel
     from tests.conftest import FakeClient
 
     class FakeProvider:
@@ -304,7 +304,7 @@ def test_session_end_does_not_flush_user_owned_providers(
     fake_provider = FakeProvider()
     # _INSTALLED_*_PROVIDER stay None — represents user-owned provider path.
     monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
-    monkeypatch.setattr(sigil_sdk, "Client", lambda *a, **k: FakeClient())
+    monkeypatch.setattr(agento11y, "Client", lambda *a, **k: FakeClient())
     assert _client._get_client() is not None
 
     _hooks.on_session_end()
@@ -313,9 +313,9 @@ def test_session_end_does_not_flush_user_owned_providers(
 
 def test_on_session_end_does_not_initialize_client(monkeypatch: pytest.MonkeyPatch, env_creds: None) -> None:
     """on_session_end must use create_if_missing=False and not trigger init."""
-    import sigil_sdk
+    import agento11y
 
-    from hermes_plugin_sigil import _otel
+    from grafana_agento11y_hermes import _otel
 
     monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
 
@@ -325,7 +325,7 @@ def test_on_session_end_does_not_initialize_client(monkeypatch: pytest.MonkeyPat
         constructed["n"] += 1
         return object()
 
-    monkeypatch.setattr(sigil_sdk, "Client", factory)
+    monkeypatch.setattr(agento11y, "Client", factory)
 
     _hooks.on_session_end()
     assert constructed["n"] == 0
@@ -341,13 +341,13 @@ def test_post_tool_call_with_unknown_id_is_safe(patch_client) -> None:
 
 
 def test_sample_rate_zero_skips_recording(monkeypatch: pytest.MonkeyPatch, patch_client) -> None:
-    """SIGIL_HERMES_SAMPLE_RATE=0 → pre-hooks short-circuit, no recorder created."""
-    from hermes_plugin_sigil import _client, _config
+    """AGENTO11Y_HERMES_SAMPLE_RATE=0 → pre-hooks short-circuit, no recorder created."""
+    from grafana_agento11y_hermes import _client, _config
 
     monkeypatch.setattr(
         _client,
         "_CONFIG",
-        _config.SigilPluginConfig(sample_rate=0.0),
+        _config.PluginConfig(sample_rate=0.0),
         raising=False,
     )
 
@@ -665,7 +665,7 @@ def test_post_llm_call_clears_running_convo(patch_client) -> None:
         session_id="s1",
         conversation_history=[{"role": "user", "content": "hi"}],
     )
-    from hermes_plugin_sigil import _state
+    from grafana_agento11y_hermes import _state
 
     # Convo is keyed by session_id only — task_id is not passed to pre_llm_call.
     assert _state.convo_get(("", "s1")) != []
@@ -674,7 +674,7 @@ def test_post_llm_call_clears_running_convo(patch_client) -> None:
 
 
 def test_sample_rate_one_records_everything(patch_client) -> None:
-    """SIGIL_HERMES_SAMPLE_RATE=1.0 (default) → every call recorded."""
+    """AGENTO11Y_HERMES_SAMPLE_RATE=1.0 (default) → every call recorded."""
     _hooks.on_pre_api_request(
         task_id="t",
         session_id="s",
@@ -690,18 +690,18 @@ def test_client_called_with_content_capture_override_when_generations_configured
     monkeypatch: pytest.MonkeyPatch,
     env_creds: None,
 ) -> None:
-    """Generations configured + no SIGIL_CONTENT_CAPTURE_MODE → Client gets content_capture=full only.
+    """Generations configured + no AGENTO11Y_CONTENT_CAPTURE_MODE → Client gets content_capture=full only.
 
     The SDK's env-resolution provides endpoint/protocol/auth — the plugin must
     not reconstruct them. The plugin only overrides content_capture so tool I/O
     stays visible.
     """
-    import sigil_sdk
-    from sigil_sdk import ContentCaptureMode
+    import agento11y
+    from agento11y import ContentCaptureMode
 
-    from hermes_plugin_sigil import _client, _otel
+    from grafana_agento11y_hermes import _client, _otel
 
-    monkeypatch.delenv("SIGIL_CONTENT_CAPTURE_MODE", raising=False)
+    monkeypatch.delenv("AGENTO11Y_CONTENT_CAPTURE_MODE", raising=False)
     captured: list[Any] = []
 
     def factory(*args: Any, **kwargs: Any) -> Any:
@@ -710,7 +710,7 @@ def test_client_called_with_content_capture_override_when_generations_configured
 
         return FakeClient()
 
-    monkeypatch.setattr(sigil_sdk, "Client", factory)
+    monkeypatch.setattr(agento11y, "Client", factory)
     monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
 
     assert _client._get_client() is not None
@@ -721,10 +721,10 @@ def test_client_called_with_content_capture_override_when_generations_configured
     # The plugin must not pin protocol="none" when generations are configured —
     # that switch is reserved for OTel-only mode.
     assert cfg.generation_export.protocol != "none"
-    # Generations get a plugin User-Agent so Sigil can attribute the traffic.
+    # Generations get a plugin User-Agent so the backend can attribute the traffic.
     ua = cfg.generation_export.headers["User-Agent"]
-    assert ua.startswith("sigil-plugin-hermes/")
-    assert "sigil-sdk-python/" in ua
+    assert ua.startswith("agento11y-plugin-hermes/")
+    assert "agento11y-sdk-python/" in ua
 
 
 def test_client_sends_plugin_user_agent_when_content_capture_mode_set(
@@ -733,15 +733,15 @@ def test_client_sends_plugin_user_agent_when_content_capture_mode_set(
 ) -> None:
     """User-Agent is sent regardless of content-capture mode.
 
-    With SIGIL_CONTENT_CAPTURE_MODE set there's no content_capture override, but
+    With AGENTO11Y_CONTENT_CAPTURE_MODE set there's no content_capture override, but
     the plugin still stamps the generation export with its User-Agent header.
     Transport/auth stay env-resolved.
     """
-    import sigil_sdk
+    import agento11y
 
-    from hermes_plugin_sigil import _client, _otel
+    from grafana_agento11y_hermes import _client, _otel
 
-    monkeypatch.setenv("SIGIL_CONTENT_CAPTURE_MODE", "no_tool_content")
+    monkeypatch.setenv("AGENTO11Y_CONTENT_CAPTURE_MODE", "no_tool_content")
     captured: list[Any] = []
 
     def factory(*args: Any, **kwargs: Any) -> Any:
@@ -750,7 +750,7 @@ def test_client_sends_plugin_user_agent_when_content_capture_mode_set(
 
         return FakeClient()
 
-    monkeypatch.setattr(sigil_sdk, "Client", factory)
+    monkeypatch.setattr(agento11y, "Client", factory)
     monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
 
     assert _client._get_client() is not None
@@ -758,19 +758,19 @@ def test_client_sends_plugin_user_agent_when_content_capture_mode_set(
     cfg = captured[0]
     assert cfg.content_capture is None
     assert cfg.generation_export.protocol != "none"
-    assert cfg.generation_export.headers["User-Agent"].startswith("sigil-plugin-hermes/")
+    assert cfg.generation_export.headers["User-Agent"].startswith("agento11y-plugin-hermes/")
 
 
-def test_sigil_headers_preserved_and_user_agent_override_wins(
+def test_export_headers_preserved_and_user_agent_override_wins(
     monkeypatch: pytest.MonkeyPatch,
     env_creds: None,
 ) -> None:
-    """SIGIL_HEADERS survives the explicit-headers path, and a user UA wins."""
-    import sigil_sdk
+    """AGENTO11Y_HEADERS survives the explicit-headers path, and a user UA wins."""
+    import agento11y
 
-    from hermes_plugin_sigil import _client, _otel
+    from grafana_agento11y_hermes import _client, _otel
 
-    monkeypatch.setenv("SIGIL_HEADERS", "X-Custom=1,User-Agent=my-agent/9")
+    monkeypatch.setenv("AGENTO11Y_HEADERS", "X-Custom=1,User-Agent=my-agent/9")
     captured: list[Any] = []
 
     def factory(*args: Any, **kwargs: Any) -> Any:
@@ -779,7 +779,7 @@ def test_sigil_headers_preserved_and_user_agent_override_wins(
 
         return FakeClient()
 
-    monkeypatch.setattr(sigil_sdk, "Client", factory)
+    monkeypatch.setattr(agento11y, "Client", factory)
     monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
 
     assert _client._get_client() is not None
@@ -791,11 +791,11 @@ def test_sigil_headers_preserved_and_user_agent_override_wins(
 def test_legacy_hermes_sigil_names_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     """Plugin must not recognize the old HERMES_SIGIL_* namespace as configuring channels."""
     for name in (
-        "SIGIL_ENDPOINT",
-        "SIGIL_PROTOCOL",
-        "SIGIL_AUTH_MODE",
-        "SIGIL_AUTH_TENANT_ID",
-        "SIGIL_AUTH_TOKEN",
+        "AGENTO11Y_ENDPOINT",
+        "AGENTO11Y_PROTOCOL",
+        "AGENTO11Y_AUTH_MODE",
+        "AGENTO11Y_AUTH_TENANT_ID",
+        "AGENTO11Y_AUTH_TOKEN",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -804,12 +804,12 @@ def test_legacy_hermes_sigil_names_are_ignored(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("HERMES_SIGIL_API_KEY", "glc_secret")
     monkeypatch.setenv("HERMES_SIGIL_OTLP_ENDPOINT", "http://legacy/otlp")
 
-    import sigil_sdk
+    import agento11y
 
     def boom(*_: Any, **__: Any) -> Any:
         raise AssertionError("Client must not be constructed when only legacy names are set")
 
-    monkeypatch.setattr(sigil_sdk, "Client", boom)
+    monkeypatch.setattr(agento11y, "Client", boom)
 
     _hooks.on_pre_api_request(task_id="t", session_id="s", model="m", provider="p", messages=[], api_call_count=1)
 
@@ -817,13 +817,19 @@ def test_legacy_hermes_sigil_names_are_ignored(monkeypatch: pytest.MonkeyPatch) 
 def test_client_config_uses_protocol_none_when_only_otel_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """OTel-only mode: no SIGIL_AUTH_TOKEN/MODE → SDK's HTTP exporter is disabled."""
-    import sigil_sdk
+    """OTel-only mode: no AGENTO11Y_AUTH_TOKEN/MODE → SDK's HTTP exporter is disabled."""
+    import agento11y
 
-    from hermes_plugin_sigil import _client, _otel
+    from grafana_agento11y_hermes import _client, _otel
 
     # Strip any generation creds; keep only the OTel endpoint.
-    for name in ("SIGIL_AUTH_TOKEN", "SIGIL_AUTH_MODE", "SIGIL_AUTH_TENANT_ID", "SIGIL_ENDPOINT", "SIGIL_PROTOCOL"):
+    for name in (
+        "AGENTO11Y_AUTH_TOKEN",
+        "AGENTO11Y_AUTH_MODE",
+        "AGENTO11Y_AUTH_TENANT_ID",
+        "AGENTO11Y_ENDPOINT",
+        "AGENTO11Y_PROTOCOL",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://otlp")
 
@@ -835,7 +841,7 @@ def test_client_config_uses_protocol_none_when_only_otel_configured(
 
         return FakeClient()
 
-    monkeypatch.setattr(sigil_sdk, "Client", factory)
+    monkeypatch.setattr(agento11y, "Client", factory)
     monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
 
     assert _client._get_client() is not None

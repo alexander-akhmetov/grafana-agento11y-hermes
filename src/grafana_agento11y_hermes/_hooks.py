@@ -1,7 +1,7 @@
 """Hermes plugin hook handlers.
 
 All handlers fail open: any exception is caught, logged at most once per kind,
-and the hermes loop is allowed to continue. If the Sigil client cannot be
+and the hermes loop is allowed to continue. If the SDK client cannot be
 constructed (missing creds, SDK error), every handler short-circuits via
 ``client is None``.
 """
@@ -19,14 +19,42 @@ from . import _client, _redact, _state
 
 logger = logging.getLogger(__name__)
 
+# LEGACY: cleared only by the test reset. Delete with the rest of the
+# pre-v2026.6.5 fallback.
+_WARNED_LEGACY_HERMES = False
+
+
+def _warn_legacy_hermes_once() -> None:
+    """Warn that hermes is too old to pair requests exactly.
+
+    hermes v2026.6.5 added ``api_request_id`` and the input/output messages to
+    the API-request hooks. Older builds fall back to matching on
+    ``api_call_count`` and recovering output from ``post_llm_call``, which
+    cannot tell apart two requests running concurrently in one session.
+    """
+    global _WARNED_LEGACY_HERMES
+    if _WARNED_LEGACY_HERMES:
+        return
+    _WARNED_LEGACY_HERMES = True
+    logger.warning(
+        "grafana-agento11y-hermes: this hermes does not send api_request_id. "
+        "Using the legacy matching path, which mis-attributes concurrent "
+        "requests in one session. Upgrade to hermes v2026.6.5 or newer."
+    )
+
+
+def _reset_for_tests() -> None:
+    global _WARNED_LEGACY_HERMES
+    _WARNED_LEGACY_HERMES = False
+
 
 def _agent_name() -> str:
     """Default agent name when the SDK can't resolve one from env/context.
 
-    The SDK reads ``SIGIL_AGENT_NAME`` itself; this fallback only kicks in
+    The SDK reads ``AGENTO11Y_AGENT_NAME`` itself; this fallback only kicks in
     when neither env nor a context override is set.
     """
-    return os.environ.get("SIGIL_AGENT_NAME", "").strip() or "hermes"
+    return os.environ.get("AGENTO11Y_AGENT_NAME", "").strip() or "hermes"
 
 
 def _convo_key(task_id: str, session_id: str) -> tuple[str, str]:
@@ -41,7 +69,7 @@ def _convo_key(task_id: str, session_id: str) -> tuple[str, str]:
 
 
 def _should_sample() -> bool:
-    """Return True if this trace should be recorded under SIGIL_HERMES_SAMPLE_RATE.
+    """Return True if this trace should be recorded under AGENTO11Y_HERMES_SAMPLE_RATE.
 
     A pre-hook that returns False simply skips ``start_generation`` and
     never stores a recorder, so the matching post-hook becomes a natural
@@ -127,9 +155,9 @@ def _serialize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _hermes_message_to_sigil(msg: dict[str, Any]):
-    """Convert one hermes-shaped message dict to a sigil_sdk.Message."""
-    from sigil_sdk import (
+def _to_sdk_message(msg: dict[str, Any]):
+    """Convert one hermes-shaped message dict to a agento11y.Message."""
+    from agento11y import (
         Message,
         MessageRole,
         Part,
@@ -169,7 +197,7 @@ def _hermes_message_to_sigil(msg: dict[str, Any]):
     return None
 
 
-def _messages_to_sigil(messages: Any) -> list:
+def _to_sdk_messages(messages: Any) -> list:
     if not isinstance(messages, list):
         return []
     out = []
@@ -178,13 +206,13 @@ def _messages_to_sigil(messages: Any) -> list:
             continue
         if msg.get("role") == "system":
             continue  # handled via system_prompt
-        sigil_msg = _hermes_message_to_sigil(msg)
-        if sigil_msg is not None:
-            out.append(sigil_msg)
+        sdk_msg = _to_sdk_message(msg)
+        if sdk_msg is not None:
+            out.append(sdk_msg)
     return out
 
 
-def _assistant_message_to_sigil(assistant_message: Any) -> list:
+def _assistant_to_sdk_messages(assistant_message: Any) -> list:
     """Build a single-element list[Message] from a hermes assistant response."""
     if assistant_message is None:
         return []
@@ -197,12 +225,12 @@ def _assistant_message_to_sigil(assistant_message: Any) -> list:
         tool_calls = getattr(assistant_message, "tool_calls", None)
 
     msg_dict = {"role": "assistant", "content": content, "tool_calls": tool_calls}
-    sigil = _hermes_message_to_sigil(msg_dict)
-    return [sigil] if sigil is not None else []
+    sdk_msg = _to_sdk_message(msg_dict)
+    return [sdk_msg] if sdk_msg is not None else []
 
 
 def _build_token_usage(usage: Any):
-    from sigil_sdk import TokenUsage
+    from agento11y import TokenUsage
 
     if not isinstance(usage, dict):
         return TokenUsage()
@@ -288,6 +316,9 @@ def on_pre_api_request(
     session_id: str = "",
     model: str = "",
     provider: str = "",
+    conversation_history: Any = None,
+    api_request_id: str = "",
+    turn_id: str = "",
     messages: Any = None,
     api_call_count: int = 0,
     **_: Any,
@@ -299,15 +330,20 @@ def on_pre_api_request(
         return
 
     try:
-        from sigil_sdk import GenerationStart, ModelRef
+        from agento11y import GenerationStart, ModelRef
 
-        # Hermes does not pass ``messages`` to pre_api_request. Fall back to
-        # the running history captured by ``pre_llm_call`` and extended by
-        # post_api_request / post_tool_call.
-        if not isinstance(messages, list):
-            messages = _state.convo_get(_convo_key(task_id, session_id))
-        system_prompt, non_system = _split_system_prompt(messages)
-        sigil_messages = _messages_to_sigil(non_system)
+        # hermes v2026.6.5+ passes the input messages here as
+        # ``conversation_history`` (agent/conversation_loop.py). ``messages`` is
+        # accepted only because older builds and our own tests used that name.
+        if not isinstance(conversation_history, list):
+            conversation_history = messages
+        if not isinstance(conversation_history, list):
+            # LEGACY: no messages on the hook, so use the running history that
+            # pre_llm_call captured and post_tool_call extends.
+            _warn_legacy_hermes_once()
+            conversation_history = _state.convo_get(_convo_key(task_id, session_id))
+        system_prompt, non_system = _split_system_prompt(conversation_history)
+        sdk_messages = _to_sdk_messages(non_system)
 
         # Stamp started_at on both seed and GenState. The seed timestamp is
         # what the SDK uses for the span's start_time; GenState carries it so
@@ -317,35 +353,40 @@ def on_pre_api_request(
             model=ModelRef(provider=provider or "unknown", name=model or "unknown"),
             conversation_id=session_id or task_id or "",
             agent_name=_agent_name(),
-            effective_version=os.environ.get("SIGIL_HERMES_AGENT_VERSION", "").strip(),
+            effective_version=os.environ.get("AGENTO11Y_HERMES_AGENT_VERSION", "").strip(),
             system_prompt=system_prompt,
             started_at=started_at,
             tags={
-                "sigil.framework.name": "hermes",
-                "sigil.framework.source": "plugin",
-                "sigil.framework.language": "python",
+                "agento11y.framework.name": "hermes",
+                "agento11y.framework.source": "plugin",
+                "agento11y.framework.language": "python",
             },
             metadata={
                 "hermes.api_call_count": api_call_count,
                 "hermes.task_id": task_id,
                 "hermes.session_id": session_id,
+                "hermes.turn_id": turn_id,
             },
         )
         recorder = client.start_generation(start)
         recorder.__enter__()
         # Input is stashed on GenState and threaded into set_result at
-        # close-time — no need to call set_result twice.
-        _state.gen_put(
-            (task_id, session_id, int(api_call_count or 0)),
-            _state.GenState(
-                recorder=recorder,
-                input_messages=sigil_messages,
-                system_prompt=system_prompt,
-                started_at=started_at,
-            ),
+        # close-time, so set_result is only called once.
+        state = _state.GenState(
+            recorder=recorder,
+            input_messages=sdk_messages,
+            system_prompt=system_prompt,
+            session_id=session_id,
+            started_at=started_at,
         )
+        if api_request_id:
+            _state.req_put(api_request_id, state)
+        else:
+            # LEGACY: infer the pair from the call counter.
+            _warn_legacy_hermes_once()
+            _state.gen_put((task_id, session_id, int(api_call_count or 0)), state)
     except Exception as exc:
-        logger.warning("hermes-plugin-sigil: on_pre_api_request failed: %s", exc)
+        logger.warning("grafana-agento11y-hermes: on_pre_api_request failed: %s", exc)
 
 
 def on_post_api_request(
@@ -353,25 +394,40 @@ def on_post_api_request(
     task_id: str = "",
     session_id: str = "",
     api_call_count: int = 0,
+    api_request_id: str = "",
     model: str = "",
     usage: Any = None,
     finish_reason: str = "",
     response_model: str = "",
+    assistant_message: Any = None,
     api_duration: float | None = None,
     **_: Any,
 ) -> None:
-    """Save partial result data on the GenState — recorder stays open.
+    """Close the generation for this API call.
 
-    Hermes does not pass ``assistant_message`` to ``post_api_request`` (only
-    ``assistant_content_chars`` and ``assistant_tool_call_count`` — see
-    ``run_agent.py:12526``). The actual content of each call's assistant
-    response is only available later via ``post_llm_call``'s
-    ``conversation_history``. We defer ``set_result`` and recorder close
-    until then. The assistant tool-call message that bridges this call to
-    the next pre_api_request input chain is synthesized in post_tool_call,
-    which is the only hook that reliably carries tool_name/args/tool_call_id
-    on current hermes.
+    hermes v2026.6.5+ passes ``api_request_id`` and ``assistant_message`` here
+    (agent/conversation_loop.py), so the pair is exact and the output is in
+    hand: set the result and close immediately. Each discarded retry is its own
+    request id, so each becomes its own generation.
+
+    LEGACY: without ``api_request_id`` the output is not available yet, so only
+    the partial fields are stashed and the close is deferred to post_llm_call,
+    which is the first hook carrying the assistant content.
     """
+    if api_request_id:
+        state = _state.req_pop(api_request_id)
+        if state is None:
+            return
+        _finish_generation(
+            state,
+            assistant_message=assistant_message,
+            usage=usage,
+            finish_reason=finish_reason,
+            response_model=response_model or model or "",
+            api_duration=api_duration,
+        )
+        return
+
     state = _state.gen_get((task_id, session_id, int(api_call_count or 0)))
     if state is None:
         return
@@ -382,13 +438,54 @@ def on_post_api_request(
         state.api_duration = float(api_duration)
 
 
-def _close_pending_for_session(session_id: str, conversation_history: Any) -> None:
-    """Drain pending generation recorders, assigning outputs from the final convo.
+def _finish_generation(
+    state: Any,
+    *,
+    assistant_message: Any,
+    usage: Any,
+    finish_reason: str,
+    response_model: str,
+    api_duration: float | None,
+) -> None:
+    """Set the result on one recorder and close it.
 
-    Called from ``post_llm_call`` (normal path) and ``on_session_end``
-    (interrupt safety). Walks the new portion of ``conversation_history`` to
-    find assistant messages in order and pairs them with stored GenStates by
-    api_call_count.
+    Pins ``completed_at`` to ``started_at + api_duration`` when hermes gave us a
+    duration, so the span and the ``gen_ai.client.operation.duration`` metric
+    cover the LLM call rather than the recorder's lifetime. That matters on the
+    legacy path, where the close can happen long after the call.
+    """
+    recorder = state.recorder
+    try:
+        sdk_output = _assistant_to_sdk_messages(assistant_message) if assistant_message is not None else []
+        duration = api_duration if api_duration is not None else state.api_duration
+        completed_at: datetime | None = None
+        if state.started_at is not None and duration is not None:
+            completed_at = state.started_at + timedelta(seconds=duration)
+        recorder.set_result(
+            input=state.input_messages,
+            output=sdk_output,
+            usage=_build_token_usage(usage),
+            stop_reason=finish_reason or "",
+            response_model=response_model or "",
+            started_at=state.started_at,
+            completed_at=completed_at,
+        )
+    except Exception as exc:
+        logger.warning("grafana-agento11y-hermes: set_result failed: %s", exc)
+    try:
+        recorder.__exit__(None, None, None)
+    except Exception as exc:
+        logger.warning("grafana-agento11y-hermes: recorder __exit__ failed: %s", exc)
+
+
+def _close_pending_for_session(session_id: str, conversation_history: Any) -> None:
+    """LEGACY: drain deferred recorders, assigning outputs from the final convo.
+
+    Only reachable on hermes older than v2026.6.5, which sends no
+    ``api_request_id``. Called from ``post_llm_call`` (normal path) and
+    ``on_session_end`` (interrupt safety). Walks the new portion of
+    ``conversation_history`` to find assistant messages in order and pairs them
+    with stored GenStates by api_call_count.
     """
     pending = _state.gen_pop_session(session_id or "")
     if not pending:
@@ -419,39 +516,16 @@ def _close_pending_for_session(session_id: str, conversation_history: Any) -> No
     pair_offset = max(0, len(pending) - n_new)
 
     for idx, ((_, _, _api_call_count), gen_state) in enumerate(pending):
-        recorder = gen_state.recorder
         new_idx = idx - pair_offset
         asst = new_asst[new_idx] if 0 <= new_idx < n_new else None
-        # Catch around the whole prep + set_result path: a malformed assistant
-        # message or usage dict would otherwise abort the loop midway, leaving
-        # later recorders open and skipping the caller's downstream
-        # convo_clear / client.flush.
-        try:
-            sigil_output = _assistant_message_to_sigil(asst) if asst is not None else []
-            token_usage = _build_token_usage(gen_state.usage)
-            # Pin completed_at to started_at + api_duration when we have it.
-            # The recorder is closed at post_llm_call time, which can be much
-            # later than the LLM call itself (after tool execution + further
-            # API calls in the same turn). Without this, the SDK's span end
-            # and operation.duration histogram would cover the whole turn.
-            completed_at: datetime | None = None
-            if gen_state.started_at is not None and gen_state.api_duration is not None:
-                completed_at = gen_state.started_at + timedelta(seconds=gen_state.api_duration)
-            recorder.set_result(
-                input=gen_state.input_messages,
-                output=sigil_output,
-                usage=token_usage,
-                stop_reason=gen_state.finish_reason,
-                response_model=gen_state.response_model,
-                started_at=gen_state.started_at,
-                completed_at=completed_at,
-            )
-        except Exception as exc:
-            logger.warning("hermes-plugin-sigil: close-pending set_result failed: %s", exc)
-        try:
-            recorder.__exit__(None, None, None)
-        except Exception as exc:
-            logger.warning("hermes-plugin-sigil: recorder __exit__ failed: %s", exc)
+        _finish_generation(
+            gen_state,
+            assistant_message=asst,
+            usage=gen_state.usage,
+            finish_reason=gen_state.finish_reason,
+            response_model=gen_state.response_model,
+            api_duration=None,
+        )
 
 
 def on_post_tool_call(
@@ -516,7 +590,7 @@ def on_post_tool_call(
         return
 
     try:
-        from sigil_sdk import ToolExecutionStart
+        from agento11y import ToolExecutionStart
 
         completed_at = datetime.now(UTC)
         if isinstance(duration_ms, (int, float)) and duration_ms >= 0:
@@ -550,23 +624,35 @@ def on_post_tool_call(
                     completed_at=completed_at,
                 )
             except Exception as exc:
-                logger.warning("hermes-plugin-sigil: tool set_result failed: %s", exc)
+                logger.warning("grafana-agento11y-hermes: tool set_result failed: %s", exc)
         finally:
             try:
                 recorder.__exit__(None, None, None)
             except Exception as exc:
-                logger.warning("hermes-plugin-sigil: tool recorder __exit__ failed: %s", exc)
+                logger.warning("grafana-agento11y-hermes: tool recorder __exit__ failed: %s", exc)
     except Exception as exc:
-        logger.warning("hermes-plugin-sigil: on_post_tool_call failed: %s", exc)
+        logger.warning("grafana-agento11y-hermes: on_post_tool_call failed: %s", exc)
 
 
 def on_session_end(*, session_id: str = "", **_: Any) -> None:
-    # Interrupt safety: if post_llm_call did not fire (e.g. user interrupted
-    # or the turn errored out — see run_agent.py:13397 ``if final_response and
-    # not interrupted``), pending recorders would leak. Close them here with
-    # whatever partial state we have. ``conversation_history=None`` means we
-    # cannot recover output content, but at least the recorders are closed
-    # and partial state (input, usage) flows to Sigil.
+    # Interrupt safety. A request whose post_api_request never fired (the user
+    # interrupted, or the call errored into api_request_error) would leak its
+    # recorder. Close it with the input and timing we already have; there is no
+    # output to recover.
+    if session_id:
+        for state in _state.req_pop_session(session_id):
+            _finish_generation(
+                state,
+                assistant_message=None,
+                usage=None,
+                finish_reason="",
+                response_model="",
+                api_duration=None,
+            )
+
+    # LEGACY: same safety for the deferred path, where post_llm_call only fires
+    # on a successful turn (agent/turn_finalizer.py:593 ``if final_response and
+    # not interrupted``).
     if session_id:
         _close_pending_for_session(session_id, None)
 
@@ -578,7 +664,7 @@ def on_session_end(*, session_id: str = "", **_: Any) -> None:
         try:
             client.flush()
         except Exception as exc:
-            logger.warning("hermes-plugin-sigil: client.flush failed: %s", exc)
+            logger.warning("grafana-agento11y-hermes: client.flush failed: %s", exc)
     # Flush the BatchSpanProcessor we installed — Client.flush() drains the
     # SDK's JSON export channel, but the OTel pipeline is independent.
     _client._flush_otel()

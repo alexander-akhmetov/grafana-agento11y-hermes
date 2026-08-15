@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from hermes_plugin_sigil import _version
+from grafana_agento11y_hermes import _version
 
 
 def test_plugin_user_agent_format() -> None:
     ua = _version.plugin_user_agent()
     plugin, sdk = ua.split(" ", 1)
-    assert plugin.startswith("sigil-plugin-hermes/")
+    assert plugin.startswith("agento11y-plugin-hermes/")
     assert plugin.split("/", 1)[1]  # non-empty version
-    assert sdk.startswith("sigil-sdk-python/")
+    assert sdk.startswith("agento11y-sdk-python/")
     assert sdk.split("/", 1)[1]
 
 
@@ -20,4 +20,4 @@ def test_plugin_user_agent_falls_back_when_metadata_missing(monkeypatch) -> None
 
     monkeypatch.setattr(_version, "version", boom)
     ua = _version.plugin_user_agent()
-    assert ua.startswith("sigil-plugin-hermes/dev ")
+    assert ua.startswith("agento11y-plugin-hermes/dev ")

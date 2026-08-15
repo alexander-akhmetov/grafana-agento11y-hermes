@@ -1,21 +1,25 @@
-name: sigil
-version: "0.1.0"
-description: "Grafana AI Observability for Hermes — records LLM calls and tool usage as Sigil generations and OTel traces+metrics."
+# No version key. For a pip-installed plugin hermes reads the version from the
+# distribution metadata, not from here, so a number in this file only goes
+# stale. See hermes_cli/plugins.py, discover_entrypoint_manifests.
+name: agento11y
+description: "Grafana Agent Observability for Hermes. Records LLM calls and tool usage as generations and OTel traces+metrics."
 author: Alexander Akhmetov
 requires_env:
-  - name: HERMES_SIGIL_ENDPOINT
-    description: "Sigil generations API URL, e.g. https://<region>.grafana.net/api/v1/generations:export"
-  - name: HERMES_SIGIL_INSTANCE_ID
-    description: "Sigil instance ID (basic-auth user)"
-  - name: HERMES_SIGIL_API_KEY
-    description: "Sigil API token with sigil:write scope"
+  - name: AGENTO11Y_ENDPOINT
+    description: "Generations API URL, e.g. https://sigil-prod-<region>.grafana.net"
+  - name: AGENTO11Y_PROTOCOL
+    description: "Generations export protocol, http for Grafana Cloud"
+  - name: AGENTO11Y_AUTH_MODE
+    description: "Generations auth mode, basic for Grafana Cloud"
+  - name: AGENTO11Y_AUTH_TENANT_ID
+    description: "Grafana Cloud stack ID (basic-auth user)"
+  - name: AGENTO11Y_AUTH_TOKEN
+    description: "Grafana Cloud token with sigil:write scope"
     secret: true
-  - name: HERMES_SIGIL_OTLP_ENDPOINT
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
     description: "Grafana Cloud OTLP gateway base URL, e.g. https://otlp-gateway-prod-<region>.grafana.net/otlp"
-  - name: HERMES_SIGIL_OTLP_INSTANCE_ID
-    description: "Grafana Cloud OTLP basic-auth user (instance ID from the stack details page)"
-  - name: HERMES_SIGIL_OTLP_TOKEN
-    description: "Grafana Cloud OTLP write token"
+  - name: OTEL_EXPORTER_OTLP_HEADERS
+    description: "OTLP auth header. Optional: derived from AGENTO11Y_AUTH_* when unset"
     secret: true
 provides_hooks:
   - pre_llm_call

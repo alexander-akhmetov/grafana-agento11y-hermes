@@ -1,8 +1,8 @@
-"""Test fixtures for hermes-plugin-sigil.
+"""Test fixtures for grafana-agento11y-hermes.
 
-Each test gets a fake Sigil ``Client`` that records calls without touching the
-network. The ``patch_client`` fixture replaces ``sigil_sdk.Client`` so that
-``hermes_plugin_sigil._client._get_client()`` returns the fake. Module-level
+Each test gets a fake SDK ``Client`` that records calls without touching the
+network. The ``patch_client`` fixture replaces ``agento11y.Client`` so that
+``grafana_agento11y_hermes._client._get_client()`` returns the fake. Module-level
 state in ``_client``, ``_otel``, and ``_state`` is reset between tests so
 ordering doesn't leak.
 """
@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from hermes_plugin_sigil import _client, _state
+from grafana_agento11y_hermes import _client, _hooks, _state
 
 
 class FakeRecorder:
@@ -42,7 +42,7 @@ class FakeRecorder:
 
 
 class FakeClient:
-    """In-memory stand-in for ``sigil_sdk.Client``."""
+    """In-memory stand-in for ``agento11y.Client``."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.start_generation_calls: list[Any] = []
@@ -78,26 +78,28 @@ def reset_module_state() -> Iterator[None]:
     """Clear cached client + recorder state before every test."""
     _client._reset_for_tests()
     _state.reset_for_tests()
+    _hooks._reset_for_tests()
     yield
     _client._reset_for_tests()
     _state.reset_for_tests()
+    _hooks._reset_for_tests()
 
 
 @pytest.fixture
 def env_creds(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Generations under SIGIL_*, OTel under standard OTEL_* envs."""
-    monkeypatch.setenv("SIGIL_ENDPOINT", "http://localhost/api/v1/generations:export")
-    monkeypatch.setenv("SIGIL_PROTOCOL", "http")
-    monkeypatch.setenv("SIGIL_AUTH_MODE", "basic")
-    monkeypatch.setenv("SIGIL_AUTH_TENANT_ID", "stack-1")
-    monkeypatch.setenv("SIGIL_AUTH_TOKEN", "glc_secret")
+    """Generations under AGENTO11Y_*, OTel under standard OTEL_* envs."""
+    monkeypatch.setenv("AGENTO11Y_ENDPOINT", "http://localhost/api/v1/generations:export")
+    monkeypatch.setenv("AGENTO11Y_PROTOCOL", "http")
+    monkeypatch.setenv("AGENTO11Y_AUTH_MODE", "basic")
+    monkeypatch.setenv("AGENTO11Y_AUTH_TENANT_ID", "stack-1")
+    monkeypatch.setenv("AGENTO11Y_AUTH_TOKEN", "glc_secret")
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost/otlp")
 
 
 @pytest.fixture
 def patch_client(monkeypatch: pytest.MonkeyPatch, env_creds: None) -> FakeClient:
-    """Replace ``sigil_sdk.Client`` with ``FakeClient`` and skip OTel setup."""
-    import sigil_sdk
+    """Replace ``agento11y.Client`` with ``FakeClient`` and skip OTel setup."""
+    import agento11y
 
     instances: list[FakeClient] = []
 
@@ -106,9 +108,9 @@ def patch_client(monkeypatch: pytest.MonkeyPatch, env_creds: None) -> FakeClient
         instances.append(instance)
         return instance
 
-    monkeypatch.setattr(sigil_sdk, "Client", factory)
+    monkeypatch.setattr(agento11y, "Client", factory)
     # Skip the real OTel auto-setup — tests for that path are isolated.
-    from hermes_plugin_sigil import _otel
+    from grafana_agento11y_hermes import _otel
 
     monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
 
