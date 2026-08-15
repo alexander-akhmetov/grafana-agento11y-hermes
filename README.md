@@ -1,6 +1,6 @@
 # grafana-agento11y-hermes
 
-![Grafana Agent Observability UI](img.png)
+![Grafana Agent Observability UI](https://raw.githubusercontent.com/alexander-akhmetov/grafana-agento11y-hermes/main/img.png)
 
 [Grafana Agent Observability](https://grafana.com/docs/grafana-cloud/machine-learning/ai-observability/) plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Records LLM calls and tool executions as generations and emits OTel traces + metrics.
 
@@ -20,7 +20,7 @@ The agent will walk you through pip install, `~/.hermes/config.yaml`, and the cr
 ### Manual
 
 ```bash
-pip install git+https://github.com/alexander-akhmetov/grafana-agento11y-hermes
+pip install grafana-agento11y-hermes
 ```
 
 Install into the same Python environment hermes runs from (`which hermes` to check). Then enable the plugin in `~/.hermes/config.yaml`:
@@ -47,7 +47,7 @@ The package, the module, the entry-point key and the env vars were all renamed.
 
 ```bash
 pip uninstall hermes-plugin-sigil
-pip install git+https://github.com/alexander-akhmetov/grafana-agento11y-hermes
+pip install grafana-agento11y-hermes
 ```
 
 The uninstall is required. The new package has a different name, so pip installs it alongside the old one instead of replacing it, and both would register a plugin.

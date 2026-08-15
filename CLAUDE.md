@@ -94,14 +94,15 @@ When in doubt about hook kwargs, read the `_invoke_hook(...)` call sites in `age
 The project is managed with uv. Dev dependencies live in `[dependency-groups]`, not in an extra, so `pip install -e ".[dev]"` no longer works. Use `uv sync`, or `pip install --group dev` on pip 25.1 or newer.
 
 ```bash
-make sync      # install the venv from uv.lock
-make lint      # ruff format --check, ruff check, ty
-make test      # pytest on the default Python
-make test-all  # pytest on 3.11, 3.12, 3.13 and 3.14
-make check     # lint + test
+make sync            # install the venv from uv.lock
+make lint            # ruff format --check, ruff check, ty
+make test            # pytest on the default Python
+make test-all        # pytest on 3.11, 3.12, 3.13 and 3.14
+make changelog-test  # the changelog scripts in scripts/
+make check           # lint + test + changelog-test
 ```
 
-`make lint` runs the same three checks as the CI lint job. `make format` rewrites files instead of checking them.
+`make lint` runs the same three checks as the CI lint job. `make format` rewrites files instead of checking them. `make changelog-test` runs in the CI lint job as well, because the scripts are bash and have nothing to do with the Python matrix.
 
 Commit `uv.lock` with any dependency change. CI runs `uv sync --locked`, which fails when the lock is out of date with `pyproject.toml`.
 
@@ -112,6 +113,32 @@ Tests stub `agento11y.Client` with `tests/conftest.py:FakeClient` and `_otel.set
 `tests/__init__.py` exists (empty) so `tests/` is an importable package. Three tests do `from tests.conftest import FakeClient` inside `Client` factory lambdas.
 
 `tests/test_hooks.py` omits `api_request_id`, so every case in it exercises the legacy path. `tests/test_hooks_request_scoped.py` covers the current one. Both are needed while the fallback lives.
+
+## Releasing
+
+Tagging is the whole release. `release.yml` fires on an `X.Y.Z` tag, pre-releases like `0.6.0rc1` and `0.6.0-rc1` included, and runs three jobs:
+
+1. `build` runs the tests again (a tag can point at any commit), builds, checks the built version against the tag, attests provenance, generates the changelog section, creates the GitHub release, and uploads `dist/` and the section as workflow artifacts.
+2. `publish-pypi` downloads the `dist` artifact and uploads it to PyPI.
+3. `changelog-pr` opens a PR that adds the section to `CHANGELOG.md` on main.
+
+The version check parses both sides with `packaging.version.Version` instead of comparing strings, because hatch-vcs normalizes a `0.6.0-rc1` tag to `0.6.0rc1` in the filename. What it is there to catch is the dev version hatch-vcs produces when HEAD is not exactly on the tag or the tree is dirty.
+
+PyPI goes last of the two publishing steps because it is the only one that cannot be undone. A version number is one-shot: PyPI refuses a re-upload of a version even after you delete it, so a bad release needs a new version, not a retag. A bad GitHub release can be deleted and recreated.
+
+Uploads use PyPI trusted publishing, so no API token exists anywhere. The publisher is bound to this repository, the `release.yml` filename and the `pypi` GitHub environment. Changing any of the three breaks the upload until it is updated at https://pypi.org/manage/account/publishing/.
+
+### Changelog
+
+Ported from kontora, which writes the same kind of plain imperative commit subjects. There is no conventional-commit prefix to group by, so every non-merge subject in the range becomes a bullet.
+
+- `scripts/changelog-for-release.sh <version> [<from-ref>] [<to-ref>]` prints one section and writes nothing. `--no-heading --hashes` is the release-notes form, since the GitHub release title already carries the version.
+- `scripts/insert-changelog-section.sh CHANGELOG.md` reads a section on stdin and places it by version order. A version already in the file is a no-op, so re-running the release job cannot stack a duplicate.
+- `scripts/backfill-changelog.sh` rebuilds the whole file from every tag. It refuses to run over uncommitted edits, because it is a full rewrite.
+
+Three things the scripts do on purpose. The section date comes from the tagged commit rather than the clock, and the range ends at the tag rather than HEAD, so two checkouts produce identical bytes. The previous tag is the highest one strictly below this release, not the newest tag in the repository, so a backport compares against its own predecessor. Compare links follow the `origin` remote instead of a baked-in URL.
+
+The `Release <tag>: changelog` subject the `changelog-pr` job commits is filtered out of the next release's section. Renaming it in the workflow means renaming it in `BOT_SUBJECTS` too. `DEPENDENCY_SUBJECTS` covers both dependabot shapes, the single `Bump X from Y to Z` and the grouped `Bump the <name> group`, and is deliberately narrow so prose starting with "Bump" stays a normal bullet.
 
 ## Plugin manifest note
 

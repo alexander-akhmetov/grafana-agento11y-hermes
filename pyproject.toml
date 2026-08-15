@@ -52,6 +52,7 @@ include = [
   "src/grafana_agento11y_hermes",
   "plugin.yaml",
   "README.md",
+  "CHANGELOG.md",
   "LICENSE",
 ]
 

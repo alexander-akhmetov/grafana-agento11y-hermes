@@ -72,7 +72,7 @@ Alloy / OTel Collector that does redaction before forwarding.
 
 ```bash
 which hermes                     # find the python that runs hermes
-<that-python> -m pip install git+https://github.com/alexander-akhmetov/grafana-agento11y-hermes
+<that-python> -m pip install grafana-agento11y-hermes
 ```
 
 If `hermes` lives in a venv or pipx env, install into *that* env, not the
