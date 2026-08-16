@@ -51,12 +51,9 @@ machine. No prompts, no responses, no tool args, no tool results. Both
 channels honor it.
 
 ```bash
-# Recommended for privacy-sensitive setups: only counts, model name,
-# usage, timing. No prompts, responses, or tool I/O:
+# The setting to use when content must not leave the machine: only counts,
+# model name, usage, timing. No prompts, responses, or tool I/O:
 export AGENTO11Y_CONTENT_CAPTURE_MODE=metadata_only
-
-# Middle ground: keep prompts/responses, drop tool args + results:
-export AGENTO11Y_CONTENT_CAPTURE_MODE=no_tool_content
 
 # Sample only a fraction of calls (defense-in-depth, not redaction):
 export AGENTO11Y_HERMES_SAMPLE_RATE=0.1   # 10%
@@ -160,7 +157,7 @@ token in that file is a silent failure.
 |---|---|---|
 | `AGENTO11Y_AGENT_NAME` | `hermes` | Multiple Hermes deployments and you want to distinguish them in the UI |
 | `OTEL_SERVICE_NAME` | `hermes` | Same reason |
-| `AGENTO11Y_CONTENT_CAPTURE_MODE` | `full` | Set `no_tool_content` or `metadata_only` to drop tool args/results from records |
+| `AGENTO11Y_CONTENT_CAPTURE_MODE` | `full` | Set `metadata_only` to keep recording every call while no prompts, responses or tool I/O leave the machine |
 | `AGENTO11Y_DEBUG` | `false` | Set `true` for verbose SDK logs while debugging install |
 | `AGENTO11Y_HERMES_SAMPLE_RATE` | `1.0` | Lower if volume is high. Range `0.0`–`1.0` |
 | `AGENTO11Y_HERMES_MAX_CHARS` | `12000` | Truncation cap per redacted string |

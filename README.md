@@ -79,6 +79,8 @@ OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp-gateway-<...>.grafana.net/otlp
 OTEL_EXPORTER_OTLP_HEADERS='Authorization=Basic <base64 of "123456:glc_...">'
 ```
 
+With no capture mode set, the plugin records full content, so prompts, assistant replies, tool arguments and tool results all leave the machine; set `AGENTO11Y_CONTENT_CAPTURE_MODE=metadata_only` to keep recording every call while no prompts, responses or tool I/O leave the machine.
+
 If you do not have a Grafana Cloud account, create one at https://grafana.com/auth/sign-up/create-user/. The free tier is enough.
 
 ## Verify
