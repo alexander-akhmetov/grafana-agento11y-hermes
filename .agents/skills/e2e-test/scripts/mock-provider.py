@@ -12,10 +12,15 @@ last entry repeats when the list runs out.
   scratchpad  content with an unterminated <REASONING_SCRATCHPAD> and
               finish_reason=length, which reaches hermes' thinking-budget-
               exhausted path
+  tool        a call to the read-only ``skills_list`` tool, so hermes executes
+              a tool and comes back for a second API call. Pair it as
+              ``tool,ok`` to get a two-call session, which is the only way to
+              reach the paths that need more than one request in a session.
   ok          a normal assistant reply
 
-Streaming requests get SSE back, because hermes always prefers the streaming
-path and reads a non-streamed body as an empty stream.
+Every step honours the request's own ``stream`` flag: a streaming request gets
+SSE and a non-streaming one gets a plain body. Hermes always prefers the
+streaming path, and reads a non-streamed body as an empty stream.
 """
 
 from __future__ import annotations
@@ -54,17 +59,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def _send_sse(self, text: str, finish_reason: str) -> None:
-        base = {"id": "chatcmpl-mock", "object": "chat.completion.chunk", "created": 0, "model": "mock-model"}
-        chunks = [
-            {**base, "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]},
-            {**base, "choices": [{"index": 0, "delta": {"content": text}}]},
-            {
-                **base,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-                "usage": {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15},
-            },
-        ]
+    def _send_stream(self, chunks: list[dict[str, Any]]) -> None:
         payload = "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks) + "data: [DONE]\n\n"
         raw = payload.encode()
         self.send_response(200)
@@ -72,6 +67,65 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def _send_sse(self, text: str, finish_reason: str) -> None:
+        base = {"id": "chatcmpl-mock", "object": "chat.completion.chunk", "created": 0, "model": "mock-model"}
+        self._send_stream(
+            [
+                {**base, "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]},
+                {**base, "choices": [{"index": 0, "delta": {"content": text}}]},
+                {
+                    **base,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                    "usage": {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15},
+                },
+            ]
+        )
+
+    def _send_sse_tool_call(self, name: str, arguments: str) -> None:
+        """Stream one tool call, the delta shape the OpenAI wire uses."""
+        base = {"id": "chatcmpl-mock", "object": "chat.completion.chunk", "created": 0, "model": "mock-model"}
+        call = {"index": 0, "id": "call_mock_1", "type": "function", "function": {"name": name, "arguments": ""}}
+        self._send_stream(
+            [
+                {
+                    **base,
+                    "choices": [{"index": 0, "delta": {"role": "assistant", "content": "", "tool_calls": [call]}}],
+                },
+                {
+                    **base,
+                    "choices": [
+                        {"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": arguments}}]}}
+                    ],
+                },
+                {
+                    **base,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                    "usage": {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15},
+                },
+            ]
+        )
+
+    def _send_tool_call(self, name: str, arguments: str) -> None:
+        """One tool call in the non-streaming body shape."""
+        call = {"id": "call_mock_1", "type": "function", "function": {"name": name, "arguments": arguments}}
+        self._send(
+            200,
+            {
+                "id": "chatcmpl-mock",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "mock-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": None, "tool_calls": [call]},
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15},
+            },
+        )
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler naming
         if self.path.rstrip("/").endswith("/models"):
@@ -87,6 +141,14 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             parsed = {}
         streaming = bool(parsed.get("stream"))
+
+        # Hermes opens with a ``/api/show`` model probe. Only a completion
+        # request may advance the script, otherwise every entry is one call
+        # later than written and a scripted failure never reaches the turn.
+        if "completions" not in self.path:
+            log(f"PROBE path={self.path} bytes={len(body)}")
+            self._send(200, {"model": "mock-model"})
+            return
 
         step = SCRIPT[min(_calls["n"], len(SCRIPT) - 1)].strip()
         _calls["n"] += 1
@@ -108,6 +170,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
+            return
+
+        if step == "tool":
+            if streaming:
+                self._send_sse_tool_call("skills_list", "{}")
+            else:
+                self._send_tool_call("skills_list", "{}")
             return
 
         text, finish = "MOCK-REPLY-OK", "stop"

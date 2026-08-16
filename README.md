@@ -79,7 +79,19 @@ OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp-gateway-<...>.grafana.net/otlp
 OTEL_EXPORTER_OTLP_HEADERS='Authorization=Basic <base64 of "123456:glc_...">'
 ```
 
-With no capture mode set, the plugin records full content, so prompts, assistant replies, tool arguments and tool results all leave the machine; set `AGENTO11Y_CONTENT_CAPTURE_MODE=metadata_only` to keep recording every call while no prompts, responses or tool I/O leave the machine.
+With no capture mode set, the plugin records full content, so the system prompt, the tool definitions, prompts, assistant replies, tool arguments and tool results all leave the machine; set `AGENTO11Y_CONTENT_CAPTURE_MODE=metadata_only` to keep recording every call while no prompts, responses or tool I/O leave the machine.
+
+### Capture fidelity
+
+The system prompt and the tool schemas come from the request payload hermes hands its plugins, and hermes clips that payload past `HERMES_PLUGIN_PAYLOAD_MAX_CHARS` (50000 by default). Its own system prompt and toolset cross that on ordinary sessions, so the plugin fills each field from the best copy it read earlier in the same session. If a conversation still shows no tools, raise the variable in the environment hermes starts from:
+
+```bash
+HERMES_PLUGIN_PAYLOAD_MAX_CHARS=200000
+```
+
+It is a hermes setting, not a plugin one: it governs what every plugin receives, so the plugin does not change it for you.
+
+This recovers the tool schemas. It does not recover a long system prompt: hermes clips every string at 8000 characters before it measures the payload against the variable, so a prompt longer than that arrives cut at any value. A generation whose fields came from an earlier request carries `hermes.request_facts_reused: true`.
 
 If you do not have a Grafana Cloud account, create one at https://grafana.com/auth/sign-up/create-user/. The free tier is enough.
 

@@ -29,6 +29,8 @@ not assemble anything by hand (Step 3).
 By default this plugin sends **full conversation content** to Grafana Cloud:
 
 - Every user prompt and every assistant response (text content).
+- The **system prompt** and the **tool definitions**, including each tool's
+  description and JSON schema, read from the request hermes is about to send.
 - Every tool call's **arguments** and the tool's **result** (truncated per
   string at `AGENTO11Y_HERMES_MAX_CHARS`, default 12000 chars).
 - Conversation history snapshots that get attached to each generation as
@@ -47,8 +49,8 @@ useful thing to see in the AI Observability UI.
 The privacy lever is **`AGENTO11Y_CONTENT_CAPTURE_MODE=metadata_only`**. Set
 it before starting Hermes and the plugin still records every call, but
 only counts, model name, usage, finish reason, and timing leave the
-machine. No prompts, no responses, no tool args, no tool results. Both
-channels honor it.
+machine. No system prompt, no tool descriptions or schemas, no prompts, no
+responses, no tool args, no tool results. Both channels honor it.
 
 ```bash
 # The setting to use when content must not leave the machine: only counts,

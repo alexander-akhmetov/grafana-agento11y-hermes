@@ -60,6 +60,28 @@ def test_pre_api_request_calls_start_generation_with_expected_fields(patch_clien
     assert any(m.role == MessageRole.USER for m in state.input_messages)
 
 
+def test_the_legacy_path_reads_the_request_payload_too(patch_client) -> None:
+    """``on_pre_api_request`` is shared, so a pre-0.16.0 hermes captures both."""
+    _hooks.on_pre_api_request(
+        task_id="t1",
+        session_id="s1",
+        model="claude-sonnet-4-6",
+        provider="anthropic",
+        messages=_sample_messages(),
+        api_call_count=1,
+        tool_count=1,
+        request={
+            "method": "POST",
+            "body": {"system": "be helpful", "tools": [{"name": "calc", "input_schema": {"type": "object"}}]},
+        },
+    )
+
+    start: GenerationStart = patch_client.start_generation_calls[0]
+    assert [tool.name for tool in start.tools] == ["calc"]
+    assert start.system_prompt == "be helpful", "the request body beats a system message in the history"
+    assert start.metadata["hermes.tool_count"] == 1
+
+
 def test_pre_post_api_request_round_trip(patch_client) -> None:
     _hooks.on_pre_api_request(
         task_id="t1",

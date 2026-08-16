@@ -20,10 +20,47 @@ from opentelemetry import trace as otel_trace
 
 from grafana_agento11y_hermes import _client, _errors, _hooks, _state
 
+# No system message: hermes prepends the system prompt to the list that goes on
+# the wire, not to the running conversation it hands the hooks.
 CONVO = [
-    {"role": "system", "content": "be helpful"},
     {"role": "user", "content": "what is 2+2?"},
 ]
+
+# The anthropic_messages body, which is where the system prompt and the tool
+# schemas actually reach the plugin.
+REQUEST = {
+    "method": "POST",
+    "body": {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 8192,
+        "temperature": 0.7,
+        "system": [{"type": "text", "text": "be helpful"}],
+        "messages": [{"role": "user", "content": "what is 2+2?"}],
+        "tools": [
+            {"name": "read_file", "description": "read a file", "input_schema": {"type": "object"}},
+            {"name": "shell", "description": "run a command", "input_schema": {"type": "object"}},
+        ],
+        "tool_choice": {"type": "auto"},
+    },
+}
+
+# What the host's payload sanitizer leaves once the envelope is over its cap.
+CLIPPED_REQUEST = {"_truncated": True, "original_type": "dict", "preview": "{'model': 'claude"}
+
+# The pass before that one: the body still reads, but the prompt is cut short
+# and the tool list is one entry plus the count of what it dropped.
+CLIPPED_FIELDS_REQUEST = {
+    "method": "POST",
+    "body": {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 8192,
+        "system": [{"type": "text", "text": "be help...[truncated 900 chars]"}],
+        "tools": [
+            {"name": "read_file", "description": "read a file", "input_schema": {"type": "object"}},
+            {"_truncated_items": 1},
+        ],
+    },
+}
 
 
 def texts(messages: Any) -> list[str]:
@@ -48,8 +85,9 @@ def _pre(client_unused: Any = None, **over: Any) -> None:
         "model": "claude-sonnet-4-6",
         "provider": "anthropic",
         "api_call_count": 1,
-        "message_count": 2,
-        "tool_count": 0,
+        "message_count": 1,
+        "tool_count": 2,
+        "request": REQUEST,
     }
     kwargs.update(over)
     _hooks.on_pre_api_request(**kwargs)
@@ -342,11 +380,210 @@ def test_a_non_numeric_token_count_does_not_discard_the_generation(
     assert usage.total_tokens == 0
 
 
-@pytest.mark.parametrize(("sent", "recorded"), [(4096, 4096), (None, None), ("8192", 8192), ("none", None)])
-def test_max_tokens_is_recorded(patch_client: Any, env_creds: None, sent: Any, recorded: int | None) -> None:
-    _pre(max_tokens=sent)
+@pytest.mark.parametrize(
+    ("sent", "body", "recorded"),
+    [
+        # The body is what hermes put on the wire, and the kwarg beside it
+        # arrives as None on every supported release.
+        (None, {"max_tokens": 8192}, 8192),
+        ("8192", {"max_tokens": 4096}, 4096),
+        # Nothing readable on the body: the kwarg is all there is.
+        (4096, None, 4096),
+        (None, None, None),
+        ("8192", None, 8192),
+        ("none", None, None),
+    ],
+)
+def test_max_tokens_is_recorded(
+    patch_client: Any, env_creds: None, sent: Any, body: dict | None, recorded: int | None
+) -> None:
+    _pre(max_tokens=sent, request={"method": "POST", "body": body} if body else None)
 
     assert patch_client.start_generation_calls[0].max_tokens == recorded
+
+
+# --- what the request payload puts on the generation ---
+
+
+def test_the_seed_carries_the_tools_and_sampling_params(patch_client: Any, env_creds: None) -> None:
+    _pre()
+
+    start = patch_client.start_generation_calls[0]
+    assert [tool.name for tool in start.tools] == ["read_file", "shell"]
+    assert start.system_prompt == "be helpful"
+    assert start.max_tokens == 8192
+    assert start.temperature == 0.7
+    assert start.tool_choice == "auto"
+    assert start.metadata["hermes.tool_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("over", "expected"),
+    [
+        # anthropic_messages puts it on the body.
+        ({}, "be helpful"),
+        # chat_completions puts no ``system`` on the body at all, so the
+        # message list is the only copy.
+        (
+            {
+                "request": {"method": "POST", "body": {"model": "gpt-5"}},
+                "request_messages": [{"role": "system", "content": "from the messages"}],
+            },
+            "from the messages",
+        ),
+        # Hermes past 0.20.1 passes the unclipped text as its own kwarg, which
+        # beats the body the sanitizer may have clipped.
+        ({"system_prompt": "from the kwarg"}, "from the kwarg"),
+    ],
+)
+def test_the_seed_system_prompt_follows_the_api_mode(
+    patch_client: Any, env_creds: None, over: dict[str, Any], expected: str
+) -> None:
+    _pre(**over)
+
+    assert patch_client.start_generation_calls[0].system_prompt == expected
+
+
+def test_a_clipped_request_reuses_the_session_capture(patch_client: Any, env_creds: None) -> None:
+    """The common case: hermes clips the payload as the conversation grows."""
+    _pre()
+    _pre(api_request_id="req-2", request=CLIPPED_REQUEST)
+
+    start = patch_client.start_generation_calls[1]
+    assert [tool.name for tool in start.tools] == ["read_file", "shell"]
+    assert start.system_prompt == "be helpful"
+    assert start.max_tokens == 8192
+
+
+def test_a_capture_never_crosses_into_another_session(patch_client: Any, env_creds: None) -> None:
+    _pre()
+    _hooks.on_session_end(session_id="sess-1")
+
+    _pre(api_request_id="req-2", session_id="sess-2", request=CLIPPED_REQUEST)
+
+    start = patch_client.start_generation_calls[-1]
+    assert start.tools == []
+    assert start.system_prompt == ""
+
+
+def test_a_capture_outlives_the_turn_that_made_it(patch_client: Any, env_creds: None) -> None:
+    """``on_session_end`` fires once per user message, not once per session.
+
+    Hermes calls ``run_conversation`` per turn and finalizes it at the end of
+    each (``agent/turn_finalizer.py`` in 0.19.0). Turn 2's first request
+    already carries the grown history and so arrives clipped, which is exactly
+    when the capture has to still be there.
+    """
+    _pre()
+    _hooks.on_session_end(session_id="sess-1")
+
+    _pre(api_request_id="req-2", request=CLIPPED_REQUEST)
+
+    start = patch_client.start_generation_calls[-1]
+    assert [tool.name for tool in start.tools] == ["read_file", "shell"]
+    assert start.system_prompt == "be helpful"
+
+
+def test_a_clipped_field_does_not_overwrite_the_capture_it_borrows_from(patch_client: Any, env_creds: None) -> None:
+    """The first two sanitizer passes leave a value that reads as present.
+
+    A prompt cut to its first line and a tool list cut to one entry are worse
+    than the complete copy already held, so neither is exported nor stored.
+    """
+    _pre()
+    _pre(api_request_id="req-2", request=CLIPPED_FIELDS_REQUEST)
+    _pre(api_request_id="req-3", request=CLIPPED_REQUEST)
+
+    for start in patch_client.start_generation_calls[1:]:
+        assert [tool.name for tool in start.tools] == ["read_file", "shell"]
+        assert start.system_prompt == "be helpful"
+
+
+def test_a_shorter_clip_does_not_replace_a_longer_one(patch_client: Any, env_creds: None) -> None:
+    """Pass 2 cuts a string to 1000 chars where pass 1 cut it to 8000.
+
+    Both are the same prompt, so the longer one is simply more of it.
+    """
+
+    def clipped_to(kept: int) -> dict[str, Any]:
+        return {"method": "POST", "body": {"system": "S" * kept + f"...[truncated {12000 - kept} chars]"}}
+
+    _pre(request=clipped_to(8000))
+    _pre(api_request_id="req-2", request=clipped_to(1000))
+
+    assert patch_client.start_generation_calls[1].system_prompt.startswith("S" * 8000)
+
+
+def test_the_record_says_when_a_field_came_from_an_earlier_request(patch_client: Any, env_creds: None) -> None:
+    """A swapped toolset makes a reused field stale, so the record admits it."""
+    _pre()
+    _pre(api_request_id="req-2", request=CLIPPED_REQUEST)
+
+    first, second = patch_client.start_generation_calls
+    assert first.metadata["hermes.request_facts_reused"] is False
+    assert second.metadata["hermes.request_facts_reused"] is True
+
+
+def test_the_capture_survives_a_request_the_sampler_dropped(
+    patch_client: Any, env_creds: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sampling must not eat the readable payloads and keep the clipped ones.
+
+    Only the earliest requests of a session arrive complete, so gating the read
+    on the sample rate leaves every sampled-in request with nothing behind it.
+    """
+    cfg = _client._get_plugin_config()
+    assert cfg is not None
+    monkeypatch.setattr(cfg, "sample_rate", 0.0)
+    _pre()
+    assert patch_client.start_generation_calls == [], "the generation itself is skipped"
+
+    monkeypatch.setattr(cfg, "sample_rate", 1.0)
+    _pre(api_request_id="req-2", request=CLIPPED_REQUEST)
+
+    start = patch_client.start_generation_calls[0]
+    assert [tool.name for tool in start.tools] == ["read_file", "shell"]
+    assert start.system_prompt == "be helpful"
+
+
+def test_the_capture_map_is_bounded(patch_client: Any, env_creds: None) -> None:
+    """Nothing clears an entry, so the bound is what keeps a long process flat."""
+    for n in range(_state._SESSION_FACTS_MAX + 1):
+        _pre(api_request_id=f"req-{n}", session_id=f"sess-{n}")
+
+    assert _state.session_facts_get("sess-0") is None
+    assert _state.session_facts_get(f"sess-{_state._SESSION_FACTS_MAX}") is not None
+
+
+def test_the_history_system_prompt_is_the_last_resort(patch_client: Any, env_creds: None) -> None:
+    """No request payload at all: a pre-0.16.0 hermes, or a collapsed envelope.
+
+    Current releases put no system message in ``conversation_history``, so this
+    path is a fallback rather than the normal source.
+    """
+    _pre(request=None, conversation_history=[{"role": "system", "content": "from the history"}, *CONVO])
+
+    assert patch_client.start_generation_calls[0].system_prompt == "from the history"
+
+
+def test_a_clipped_request_still_records_the_tool_count(patch_client: Any, env_creds: None) -> None:
+    """``tools: []`` beside a non-zero count reads as lost schemas, not no tools."""
+    _pre(request=CLIPPED_REQUEST, tool_count=17)
+
+    start = patch_client.start_generation_calls[0]
+    assert start.tools == []
+    assert start.metadata["hermes.tool_count"] == 17
+
+
+def test_the_truncation_note_names_the_host_knob_once(
+    patch_client: Any, env_creds: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.DEBUG):
+        for n in range(3):
+            _pre(api_request_id=f"req-{n}", request=CLIPPED_REQUEST)
+
+    notes = [r for r in caplog.records if "HERMES_PLUGIN_PAYLOAD_MAX_CHARS" in r.getMessage()]
+    assert len(notes) == 1
 
 
 def test_generations_carry_the_builtin_tags(patch_client: Any, env_creds: None) -> None:

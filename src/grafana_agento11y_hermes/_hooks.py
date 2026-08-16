@@ -19,7 +19,8 @@ from typing import Any
 from opentelemetry import context as otel_context
 from opentelemetry import trace as otel_trace
 
-from . import _client, _errors, _redact, _state, _tags
+from . import _client, _errors, _redact, _request, _state, _tags
+from ._coerce import as_int, as_optional_int, coerce_text
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ _ERROR_MAX_CHARS = 2000
 # pre-v2026.6.5 fallback.
 _WARNED_LEGACY_HERMES = False
 _WARNED_DEPRECATED_VERSION = False
+_LOGGED_TRUNCATED_REQUEST = False
 # Set on the first request that carries an api_request_id. Nothing reads the
 # turn-scoped convo bookkeeping on that path, so its writers stop once we know
 # which hermes we are on.
@@ -69,10 +71,37 @@ def _warn_deprecated_version_once() -> None:
     )
 
 
+def _log_truncated_request_once() -> None:
+    """Note that the request payload arrived clipped, once per process.
+
+    Hermes sanitizes every hook payload against
+    ``HERMES_PLUGIN_PAYLOAD_MAX_CHARS`` (50000 by default) and, past the cap,
+    replaces the whole request envelope with a preview carrying no body. The
+    plugin does not raise that variable itself: a telemetry plugin must not
+    change what the host hands its other plugins and every tool subprocess.
+
+    At INFO because hermes sets ``agent.log`` to INFO, so a DEBUG line reaches
+    no log in a default install. One-shot ``-z`` disables logging outright
+    right after plugin discovery, where no level helps.
+    """
+    global _LOGGED_TRUNCATED_REQUEST
+    if _LOGGED_TRUNCATED_REQUEST:
+        return
+    _LOGGED_TRUNCATED_REQUEST = True
+    logger.info(
+        "grafana-agento11y-hermes: hermes truncated the request payload, so the system "
+        "prompt and tool schemas come from an earlier request in this session, where "
+        "there is one. Raising HERMES_PLUGIN_PAYLOAD_MAX_CHARS recovers the tool "
+        "schemas; a system prompt over 8000 chars stays clipped at any value."
+    )
+
+
 def _reset_for_tests() -> None:
     global _WARNED_LEGACY_HERMES, _WARNED_DEPRECATED_VERSION, _SAW_REQUEST_ID
+    global _LOGGED_TRUNCATED_REQUEST
     _WARNED_LEGACY_HERMES = False
     _WARNED_DEPRECATED_VERSION = False
+    _LOGGED_TRUNCATED_REQUEST = False
     _SAW_REQUEST_ID = False
 
 
@@ -103,27 +132,6 @@ def _effective_version() -> str:
     return legacy
 
 
-def _as_int(value: Any) -> int:
-    """Integer value, or 0 when it cannot be converted.
-
-    Token usage is built inside ``set_result``'s argument list, so a provider
-    that reports a count as text would abort the close before it and export a
-    generation with no input, output, usage or model at all.
-    """
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _as_optional_int(value: Any) -> int | None:
-    """Integer value, or ``None`` when absent or unconvertible."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _error_fields(error: Any) -> tuple[str, str, int | None]:
     """Split whatever hermes put on the error hook into (type, message, status).
 
@@ -137,10 +145,10 @@ def _error_fields(error: Any) -> tuple[str, str, int | None]:
         return (
             str(error.get("type") or ""),
             str(error.get("message") or ""),
-            _as_optional_int(error.get("status_code") or error.get("status")),
+            as_optional_int(error.get("status_code") or error.get("status")),
         )
     if isinstance(error, BaseException):
-        return type(error).__name__, str(error), _as_optional_int(getattr(error, "status_code", None))
+        return type(error).__name__, str(error), as_optional_int(getattr(error, "status_code", None))
     if isinstance(error, str):
         return "", error, None
     return "", str(error), None
@@ -173,35 +181,6 @@ def _should_sample() -> bool:
     return random.random() < cfg.sample_rate
 
 
-def _coerce_text(content: Any) -> str:
-    """Best-effort conversion of a hermes message ``content`` field to a string.
-
-    Hermes mirrors OpenAI/Anthropic shapes — content can be a string or a list
-    of typed blocks (``{"type": "text", "text": "..."}``). We collapse list
-    blocks into newline-joined text.
-    """
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        chunks: list[str] = []
-        for block in content:
-            if isinstance(block, str):
-                chunks.append(block)
-            elif isinstance(block, dict):
-                if isinstance(block.get("text"), str):
-                    chunks.append(block["text"])
-                elif isinstance(block.get("content"), str):
-                    chunks.append(block["content"])
-                else:
-                    chunks.append(json.dumps(block, default=str))
-            else:
-                chunks.append(repr(block))
-        return "\n".join(c for c in chunks if c)
-    return str(content)
-
-
 def _split_system_prompt(messages: Any) -> tuple[str, list[dict]]:
     """Pull system messages out into a single prompt string, return remaining messages."""
     if not isinstance(messages, list):
@@ -212,7 +191,7 @@ def _split_system_prompt(messages: Any) -> tuple[str, list[dict]]:
         if not isinstance(msg, dict):
             continue
         if msg.get("role") == "system":
-            text = _coerce_text(msg.get("content"))
+            text = coerce_text(msg.get("content"))
             if text:
                 system_parts.append(text)
         else:
@@ -259,18 +238,18 @@ def _to_sdk_message(msg: dict[str, Any]):
 
     role = msg.get("role")
     if role == "user":
-        text = _coerce_text(msg.get("content"))
+        text = coerce_text(msg.get("content"))
         return Message(role=MessageRole.USER, parts=[text_part(text)] if text else [])
     if role == "tool":
         tool_call_id = msg.get("tool_call_id") or ""
-        content = _coerce_text(msg.get("content"))
+        content = coerce_text(msg.get("content"))
         return Message(
             role=MessageRole.TOOL,
             parts=[tool_result_part(ToolResult(tool_call_id=tool_call_id, content=content))],
         )
     if role == "assistant":
         parts: list[Part] = []
-        text = _coerce_text(msg.get("content"))
+        text = coerce_text(msg.get("content"))
         if text:
             parts.append(text_part(text))
         for tc in _serialize_tool_calls(msg.get("tool_calls")):
@@ -339,16 +318,16 @@ def _build_token_usage(usage: Any):
     if not isinstance(usage, dict):
         return TokenUsage()
 
-    input_tokens = _as_int(usage.get("input_tokens") or usage.get("prompt_tokens"))
-    output_tokens = _as_int(usage.get("output_tokens") or usage.get("completion_tokens"))
-    total_tokens = _as_int(usage.get("total_tokens"))
-    cache_read = _as_int(usage.get("cache_read_tokens") or usage.get("cache_read_input_tokens"))
-    cache_write = _as_int(
+    input_tokens = as_int(usage.get("input_tokens") or usage.get("prompt_tokens"))
+    output_tokens = as_int(usage.get("output_tokens") or usage.get("completion_tokens"))
+    total_tokens = as_int(usage.get("total_tokens"))
+    cache_read = as_int(usage.get("cache_read_tokens") or usage.get("cache_read_input_tokens"))
+    cache_write = as_int(
         usage.get("cache_write_tokens")
         or usage.get("cache_creation_input_tokens")
         or usage.get("cache_write_input_tokens")
     )
-    reasoning = _as_int(usage.get("reasoning_tokens"))
+    reasoning = as_int(usage.get("reasoning_tokens"))
 
     return TokenUsage(
         input_tokens=input_tokens,
@@ -424,6 +403,75 @@ def on_post_llm_call(
     _state.turn_last_gen_clear(turn_id)
 
 
+def _prefer_cached(current: Any, current_clipped: bool, cached: Any, cached_clipped: bool) -> bool:
+    """True when the session's copy of a field beats what this request carried.
+
+    Empty loses to anything, and a value hermes shortened in place loses to a
+    complete one. Between two shortened copies the longer one kept more of the
+    same prompt or tool list, so length decides. Two complete reads leave the
+    current one in place: it is the fresher inventory when ``tool_search``
+    swapped the toolset.
+    """
+    if not cached:
+        return False
+    if not current:
+        return True
+    if not current_clipped:
+        return False
+    return not cached_clipped or len(cached) > len(current)
+
+
+def _request_facts(
+    session_id: str,
+    request: Any,
+    request_messages: Any,
+    system_prompt: Any,
+    tool_count: int,
+) -> tuple[_request.RequestFacts, bool]:
+    """Read this request, filling what it lost from the session's best capture.
+
+    Merging field by field rather than wholesale keeps a partial read winning
+    where it has data. What comes out is never worse than what was cached, so
+    storing it back cannot degrade the capture the next request borrows from.
+
+    Returns the facts and whether any field came from the cache.
+    """
+    facts = _request.parse(request, system_prompt=system_prompt, request_messages=request_messages)
+    if facts.truncated and request is not None:
+        _log_truncated_request_once()
+    if tool_count and len(facts.tools) < tool_count:
+        # Third signal for a clipped tool list, independent of the two markers
+        # hermes leaves in the payload: this count is raw and always accurate.
+        facts.tools_clipped = True
+
+    reused = False
+    cached = _state.session_facts_get(session_id)
+    if cached is not None:
+        if _prefer_cached(
+            facts.system_prompt,
+            facts.system_prompt_clipped,
+            cached.system_prompt,
+            cached.system_prompt_clipped,
+        ):
+            facts.system_prompt = cached.system_prompt
+            facts.system_prompt_clipped = cached.system_prompt_clipped
+            reused = True
+        if _prefer_cached(facts.tools, facts.tools_clipped, cached.tools, cached.tools_clipped):
+            # Copied, so one list is not shared by every generation of the
+            # session and by the cache entry behind them.
+            facts.tools = list(cached.tools)
+            facts.tools_clipped = cached.tools_clipped
+            reused = True
+        for name in ("max_tokens", "temperature", "top_p", "tool_choice"):
+            if getattr(facts, name) is None and getattr(cached, name) is not None:
+                setattr(facts, name, getattr(cached, name))
+                reused = True
+
+    if facts.system_prompt or facts.tools:
+        _state.session_facts_put(session_id, facts)
+    return facts, reused
+
+
 def on_pre_api_request(
     *,
     task_id: str = "",
@@ -436,6 +484,10 @@ def on_pre_api_request(
     messages: Any = None,
     api_call_count: int = 0,
     max_tokens: Any = None,
+    request: Any = None,
+    request_messages: Any = None,
+    system_prompt: Any = None,
+    tool_count: int = 0,
     **_: Any,
 ) -> None:
     global _SAW_REQUEST_ID
@@ -444,10 +496,16 @@ def on_pre_api_request(
     client = _client._get_client()
     if client is None:
         return
-    if not _should_sample():
-        return
 
     try:
+        # Read the request before the sampling gate. The payloads that arrive
+        # readable are the earliest of a session, so skipping those would leave
+        # every sampled-in request with an empty capture behind it. Parsing
+        # costs well under a millisecond and touches nothing but the cache.
+        facts, facts_reused = _request_facts(session_id, request, request_messages, system_prompt, tool_count)
+        if not _should_sample():
+            return
+
         from agento11y import GenerationStart, ModelRef
 
         # hermes v2026.6.5+ passes the input messages here as
@@ -460,8 +518,20 @@ def on_pre_api_request(
             # pre_llm_call captured and post_tool_call extends.
             _warn_legacy_hermes_once()
             conversation_history = _state.convo_get(_convo_key(task_id, session_id))
-        system_prompt, non_system = _split_system_prompt(conversation_history)
+        # ``conversation_history`` carries no system message on any supported
+        # hermes: it is the agent's running convo, and the system prompt is
+        # prepended to the separate list that goes on the wire. The split is
+        # kept for ``non_system``, which is the input, and as the last resort
+        # for the prompt itself.
+        history_system_prompt, non_system = _split_system_prompt(conversation_history)
         sdk_messages = _to_sdk_messages(non_system)
+
+        resolved_system_prompt = facts.system_prompt or history_system_prompt
+        # The body is what hermes actually put on the wire; the ``max_tokens``
+        # kwarg beside it arrives as None on every supported release.
+        resolved_max_tokens = facts.max_tokens
+        if resolved_max_tokens is None:
+            resolved_max_tokens = as_optional_int(max_tokens)
 
         # Stamp started_at on both seed and GenState. The seed timestamp is
         # what the SDK uses for the span's start_time; GenState carries it so
@@ -479,9 +549,13 @@ def on_pre_api_request(
             conversation_id=session_id or task_id or "",
             agent_name=_agent_name(),
             effective_version=_effective_version(),
-            system_prompt=system_prompt,
+            system_prompt=resolved_system_prompt,
             started_at=started_at,
-            max_tokens=_as_optional_int(max_tokens),
+            max_tokens=resolved_max_tokens,
+            temperature=facts.temperature,
+            top_p=facts.top_p,
+            tool_choice=facts.tool_choice,
+            tools=facts.tools,
             # The framework tags and the rest of the built-ins ride on the
             # ClientConfig instead, which is the only channel that also reaches
             # spans and metrics. The SDK merges them in under these.
@@ -491,6 +565,15 @@ def on_pre_api_request(
                 "hermes.task_id": task_id,
                 "hermes.session_id": session_id,
                 "hermes.turn_id": turn_id,
+                # Raw and always accurate, unlike the schemas, so an empty
+                # ``tools`` next to a non-zero count reads as a clipped payload
+                # rather than a hermes with no tools.
+                "hermes.tool_count": tool_count,
+                # True when hermes clipped this request's payload and at least
+                # one field above came from an earlier request in the session.
+                # A swapped toolset makes such a field stale, so the record
+                # says which ones to trust.
+                "hermes.request_facts_reused": facts_reused,
             },
         )
         recorder = client.start_generation(start)
@@ -500,7 +583,7 @@ def on_pre_api_request(
         state = _state.GenState(
             recorder=recorder,
             input_messages=sdk_messages,
-            system_prompt=system_prompt,
+            system_prompt=resolved_system_prompt,
             session_id=session_id,
             generation_id=generation_id,
             turn_id=turn_id,
@@ -578,7 +661,7 @@ def on_api_request_error(
             finish_reason="",
             response_model="",
             api_duration=None,
-            call_error=_errors.ProviderCallError(error_type, _as_optional_int(status_code) or payload_status),
+            call_error=_errors.ProviderCallError(error_type, as_optional_int(status_code) or payload_status),
             call_error_message=_redact.truncate_text(message, _ERROR_MAX_CHARS),
         )
         cfg = _client._get_plugin_config()
@@ -948,6 +1031,16 @@ def on_session_end(*, session_id: str = "", **_: Any) -> None:
                 response_model="",
                 api_duration=None,
             )
+        # Drop the model, which every pre_api_request rewrites anyway.
+        #
+        # The request capture is deliberately left alone. This hook fires at
+        # the end of every ``run_conversation``, which is once per user message
+        # (agent/turn_finalizer.py in hermes 0.19.0), not once per session.
+        # Clearing here would empty the cache exactly when turn 2 needs it: its
+        # first request already carries the grown history, so its payload is
+        # clipped and there would be nothing left to fall back to. The entry is
+        # keyed by session and bounded by an LRU in ``_state`` instead.
+        _state.session_model_clear(session_id)
 
     # No tool of this session can fire from here on, so the links it would have
     # read go too. post_llm_call clears the turn chain of a completed turn; this
@@ -961,7 +1054,6 @@ def on_session_end(*, session_id: str = "", **_: Any) -> None:
     # ``if final_response and not interrupted``).
     if session_id:
         _close_pending_for_session(session_id, None)
-        _state.session_model_clear(session_id)
 
     # flush() leaves the singleton client open so subsequent hermes sessions
     # in the same process keep working. shutdown() would set _closed=True and

@@ -127,11 +127,22 @@ provider are reproducible. It runs under its own `HERMES_HOME`, because
 otherwise win.
 
 ```bash
-$S/run-mock.sh "429,429,ok" "reply with OK"   # retried, then succeeds
-$S/run-mock.sh "empty"      "reply with OK"   # retryable fault, retries exhausted
-$S/run-mock.sh "401"        "reply with OK"   # not retryable
-$S/run-mock.sh "scratchpad" "reply with OK"   # thinking-budget-exhausted path
+$S/run-mock.sh "429,429,ok"     "reply with OK"      # retried, then succeeds
+$S/run-mock.sh "empty"          "reply with OK"      # retryable fault, retries exhausted
+$S/run-mock.sh "401"            "reply with OK"      # not retryable
+$S/run-mock.sh "scratchpad"     "reply with OK"      # thinking-budget-exhausted path
+$S/run-mock.sh "tool,tool,ok"   "list the skills"    # a three-call session with two tool executions
 ```
+
+`tool` returns a call to the read-only `skills_list` tool, so hermes executes it
+and comes back for another API call. It is the only way to get more than one
+request into a mock session, which is what the per-session paths need: the
+request-payload capture, the model memo `post_tool_call` reads, and anything
+else keyed on `session_id`.
+
+Only a completions request advances the script. Hermes opens with a `POST
+/api/show` model probe, and counting that as a step would shift every entry one
+call later than the script reads.
 
 Expected:
 
@@ -169,6 +180,14 @@ Things worth re-checking there after an upgrade:
 - whether `pre_api_request` carries `system_prompt`, and whether
   `conversation_history` contains a `system` role
 - whether `max_tokens` arrives as a number or as `None`
+- at what `HERMES_PLUGIN_PAYLOAD_MAX_CHARS` the `request` envelope collapses to
+  `{"_truncated": true, ...}`, which is what decides how much of the system
+  prompt and the tool schemas the plugin can capture. Set the variable
+  explicitly to reach that path: on hermes 0.19.0 with the mock provider and
+  25 tools, the boundary sat just under 36500. A value between that and the
+  default reaches the middle pass instead, where the body still reads but the
+  prompt carries a `...[truncated N chars]` suffix and the tool list a
+  `{"_truncated_items": N}` sentinel
 - whether `post_tool_call` gained `model` / `provider`, which would retire the
   per-session model memo
 - whether `post_api_request` still fires exactly once per `api_request_id`
