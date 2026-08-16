@@ -93,7 +93,7 @@ grafana-agento11y-hermes: installed MeterProvider with OTLP HTTP exporter
 grafana-agento11y-hermes: client initialized (generations=configured, otel=configured)
 ```
 
-Ask hermes anything, then check **Grafana Cloud -> Observability -> AI -> Conversations**.
+Ask hermes anything, then check **Grafana Cloud -> Observability -> Agent -> Conversations**.
 
 ## License
 
