@@ -40,33 +40,44 @@ Each channel is independently optional. If only one is configured, only that one
 
 ## Hooks contract
 
-Hermes exposes a fixed set of hook names in `hermes_cli/plugins.py:156` (`VALID_HOOKS`). We use:
+### Which hermes the line numbers come from
 
-| Hook | Fires | Where it fires |
+Hermes publishes two version schemes for the same code: git tags `vYYYY.M.D` in `NousResearch/hermes-agent`, and `0.MINOR.PATCH` on PyPI. Users install the PyPI one. Tag `v2026.6.5` (2026-06-05) is PyPI `0.16.0` (2026-06-06), which is this plugin's floor.
+
+Every line number below is from hermes-agent 0.19.0 on PyPI, the release the plugin was last tested against end to end. Differences at upstream HEAD (0.20.1 when this was written) are called out. Line numbers drift with every hermes release. The file and symbol names are the durable part.
+
+Hermes exposes a fixed set of hook names in `hermes_cli/plugins.py`: `VALID_HOOKS`, 23 names at `:135` in 0.19.0, 37 names at `:156` at HEAD. We use:
+
+| Hook | Fires | Where it fires (0.19.0) |
 |---|---|---|
-| `pre_api_request` | per LLM API call, several per turn during tool loops | `agent/conversation_loop.py:2795` |
-| `post_api_request` | once per `api_request_id`, after the retry loop | `agent/conversation_loop.py:6417` |
-| `api_request_error` | on some, not all, failed LLM API calls | |
-| `pre_llm_call` / `post_llm_call` | per turn | `post_llm_call` at `agent/turn_finalizer.py:593` |
-| `post_tool_call` | per tool invocation | `model_tools.py` |
-| `on_session_end` | per `run_conversation` end. Not on a turn that dies on a provider error | |
+| `pre_api_request` | per LLM API call, several per turn during tool loops | `agent/conversation_loop.py:1357` |
+| `post_api_request` | once per `api_request_id`, after the retry loop | `agent/conversation_loop.py:4486` |
+| `api_request_error` | on some, not all, failed LLM API calls | `run_agent.py:2587` (`_invoke_api_request_error_hook`), called from `agent/conversation_loop.py:1573`, `:1811`, `:2764` |
+| `pre_llm_call` / `post_llm_call` | per turn | `post_llm_call` at `agent/turn_finalizer.py:485` |
+| `post_tool_call` | per tool invocation | `model_tools.py:974` (`_emit_post_tool_call_hook`) |
+| `on_session_end` | per `run_conversation` end, from `finalize_turn`. Not on a turn that returns early | `agent/turn_finalizer.py:616`, plus `cli.py:1261` on interrupt |
 | `on_session_finalize` | once at interactive CLI exit. Never in one-shot | `cli.py:7121` |
 
-All handlers must accept `**kwargs` for forward compatibility.
+All handlers must accept `**kwargs` for forward compatibility. `PluginManager.invoke_hook` (`hermes_cli/plugins.py:1912`) injects `telemetry_schema_version` (`hermes.observer.v1`) into every hook payload, so it arrives on hooks whose call site never mentions it.
 
-Hooks we do not register but that exist: `on_session_start`, `on_session_finalize`, `on_session_reset`, `subagent_start`, `subagent_stop`, `pre_verify`, the `transform_*` family, and the `on_stream_*` family.
+Hooks that exist and we do not register: `on_session_start`, `on_session_reset`, `subagent_start`, `subagent_stop`, `pre_verify`, `pre_gateway_dispatch`, the approval pair, the `kanban_*` family, and the `transform_*` family. HEAD adds the `on_stream_*` family and `transform_api_error_classification`, which 0.19.0 does not have.
 
 ### What the API-request hooks actually carry
 
-Verified against the call sites, not the docs. `hermes_cli/hooks.py` has a `_DEFAULT_PAYLOADS` table that claims to mirror them; it is abbreviated and understates both hooks. Read `agent/conversation_loop.py`.
+Captured from live payloads with a probe plugin on hermes 0.19.0. `hermes_cli/hooks.py` has a `_DEFAULT_PAYLOADS` table that claims to mirror them; it is abbreviated and understates both hooks. Read `agent/conversation_loop.py`.
 
-`pre_api_request` passes `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `request_messages`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `request`.
+`pre_api_request` passes `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `user_message`, `conversation_history`, `request_messages`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request`, `telemetry_schema_version`.
 
-`post_api_request` passes `task_id`, `turn_id`, `api_request_id`, `session_id`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count`, `moa_references`.
+`post_api_request` passes `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count`, `telemetry_schema_version`.
 
 So the input messages and the assistant message both arrive on the per-call hooks. There is no need to reconstruct output from the turn-level history.
 
-`system_prompt`, `retry_count` and `middleware_trace` also appear on `pre_api_request` at HEAD, but they arrived after v2026.6.5. Do not build on them without raising the floor.
+Three kwargs exist only at HEAD, in no released version: `system_prompt` and `retry_count` on `pre_api_request`, and `moa_references` on `post_api_request`. Do not build on them without raising the floor. `middleware_trace` is in 0.19.0 but not in 0.16.0.
+
+Two payload facts to keep in mind when reading `_hooks.py`:
+
+- `conversation_history` carries the turn's messages and no `system` message, so `_split_system_prompt` has nothing to split on the current releases. A system prompt reaches the hooks only through `request`, or through the HEAD-only `system_prompt` kwarg.
+- The `request` kwarg, present since the 0.16.0 floor, carries the sanitized provider body: `model`, `messages`, `max_tokens`, `system`, `tools` with full JSON schemas, and `tool_choice`. The `max_tokens` kwarg alongside it arrives as `None`, so the body is the only source for it.
 
 ### Pairing a generation to an API call
 
@@ -77,17 +88,26 @@ So the input messages and the assistant message both arrive on the per-call hook
 - `api_request_error`: pop that state, close it carrying the provider error.
 - `on_session_end`: close anything left open, with empty output.
 
-`api_request_id` is **not** unique per hook invocation. Hermes assigns it at `agent/conversation_loop.py:2625`, above the retry loop at `:2628`, and fires `pre_api_request` inside that loop at `:2795`, so every retry re-fires the hook with the same id. `post_api_request` sits outside the loop at `:6417` and fires at most once per id.
+`api_request_id` is **not** unique per hook invocation. Hermes assigns it at `agent/conversation_loop.py:1224`, above the retry loop at `:1227`, and fires `pre_api_request` inside that loop at `:1357`, so every retry re-fires the hook with the same id. `post_api_request` sits after the loop at `:4486` and fires at most once per id.
 
-So `_state.req_put` returns whatever entry it displaced, and `on_pre_api_request` closes that abandoned attempt with a `SupersededAttempt` call error. This cannot rest on `api_request_error` alone: nine retry paths re-fire `pre_api_request` with a duplicate id and fire no error hook at all (`:4191`, `:4298`, `:4389`, `:4414`, `:3725`, `:2657`, `:2995`, `:3569`, `:4105`). Keying on `retry_count` cannot work either, because `post_api_request` never receives it.
+So `_state.req_put` returns whatever entry it displaced, and `on_pre_api_request` closes that abandoned attempt with a `SupersededAttempt` call error.
 
-One leak survives: on retry exhaustion `agent/conversation_loop.py:6173` returns straight out of `run_conversation` and never reaches `finalize_turn` (see the comment at `:6811`), so `on_session_end` does not fire for that turn. That recorder waits for the next turn's `req_pop_session` or for the CLI exit hook, so the leak is bounded at one recorder per exhausted turn.
+Displacement is a backstop. Every retryable failure exercised against 0.19.0 (429, empty stream, invalid response) fires `api_request_error` first, once per attempt, carrying `retry_count`, `retryable`, `status_code` and an `error` dict with `type` and `message`. The retry loop does hold bare `continue` paths between the two hooks, for compression, context trim and fallback activation, which fire no hook at all. Testing never caught one of those leaving a recorder open, so displacement is unproven; it costs one dict lookup per request, so keep it. Keying on `retry_count` cannot work either, because `post_api_request` never receives it.
+
+Retries that happen *after* `post_api_request` cannot displace anything, because the state is already popped. The incomplete-`REASONING_SCRATCHPAD` retry is one: the check sits at `agent/conversation_loop.py:4547` and its `continue` at `:4555`, both below the hook at `:4486`. Such an attempt is recorded as a normal completed generation carrying the partial content.
+
+Two early returns skip `finalize_turn` (`agent/conversation_loop.py:5784`) and therefore fire no `on_session_end`:
+
+- Retry exhaustion returns at `:4287`. Verified harmless: every attempt was already closed by `api_request_error`, so nothing leaks.
+- The thinking-budget-exhausted path returns at `:1947`, straight after `pre_api_request` and before any hook that could close a recorder. Interactive mode closes it on the next turn's `req_pop_session` or at the CLI exit hook. One-shot mode has neither, and it exits through `hermes_cli/main.py` `_exit_after_oneshot`, which calls `os._exit` and so skips the SDK's atexit flush, so an open recorder there has nowhere left to go.
 
 Tool executions are handled entirely in `post_tool_call`, opened and closed in one go. `status == "error"` becomes `set_exec_error`, called before `set_result`, matching the first-party plugins. `blocked` and `cancelled` stay unrecorded, also matching them.
 
-### LEGACY: hermes older than v2026.6.5
+### LEGACY: hermes older than v2026.6.5 (PyPI 0.16.0)
 
-`api_request_id` landed in v2026.6.5 (2026-06-06); v2026.5.29.2 and earlier do not send it. Without it the pre/post pair has to be inferred, so the plugin warns once and falls back to:
+`api_request_id` landed in tag v2026.6.5, which is PyPI `0.16.0` (2026-06-06); `0.15.2` and earlier do not send it. Checked by unpacking both wheels and reading the `pre_api_request` call site, not inferred from dates. From `0.16.0` on, `post_api_request` also carries everything the current path needs: `assistant_message`, `usage`, `api_duration`, `finish_reason`, `response_model`.
+
+Without `api_request_id` the pre/post pair has to be inferred, so the plugin warns once and falls back to:
 
 - `pre_llm_call` snapshots `conversation_history` into `_CONVO_STATE`, which `post_tool_call` extends with synthesized assistant tool-call and tool-result messages.
 - `pre_api_request` keys `GenState` on `(task_id, session_id, api_call_count)`.
@@ -125,6 +145,14 @@ Tests stub `agento11y.Client` with `tests/conftest.py:FakeClient` and `_otel.set
 
 `tests/test_hooks.py` omits `api_request_id`, so every case in it exercises the legacy path. `tests/test_hooks_request_scoped.py` covers the current one. Both are needed while the fallback lives.
 
+The suite reads the ambient environment, so exported `AGENTO11Y_*` / `SIGIL_*` values fail the no-credentials cases. Run it clean: `env -i PATH="$PATH" HOME="$HOME" uv run python -m pytest -q`.
+
+## End-to-end testing
+
+The unit tests stub the SDK client and hand-write the hook payloads, so they cannot catch a hermes release changing a hook or a record that never reaches the backend. `.agents/skills/e2e-test/` covers that: it builds a throwaway hermes install with the plugin in it, runs one-shot turns in every configuration, forces provider failures with a scripted mock provider, dumps what each hook really carried, and checks what arrived as generations, spans and metrics. Read `.agents/skills/e2e-test/SKILL.md` before testing a change against a real hermes, and run it on every hermes version bump.
+
+Two of its tools answer questions no amount of reading can. The probe plugin prints the actual hook kwargs, which is the only reliable source for the payload tables above. The local OTLP sink shows what the exporter emitted, which separates a plugin bug from sampling on the receiving end.
+
 ## Releasing
 
 Tagging is the whole release. `release.yml` fires on an `X.Y.Z` tag, pre-releases like `0.6.0rc1` and `0.6.0-rc1` included, and runs three jobs:
@@ -153,8 +181,17 @@ The `Release <tag>: changelog` subject the `changelog-pr` job commits is filtere
 
 ## Plugin manifest note
 
-`plugin.yaml` is informational for pip-distributed plugins. Hermes builds the manifest for an entry-point plugin from distribution metadata instead (`hermes_cli/plugins.py`, `discover_entrypoint_manifests`): the name comes from the entry-point name, the version from `dist.version`, the description from the `Summary` field. That is why the file carries no `version:` key, and why a stale one there would never have been read anyway. Shipped for parity with directory plugins and future install-time UX. The `provides_hooks:` key matches the canonical guide.
+`plugin.yaml` is informational for pip-distributed plugins. For an entry-point plugin hermes builds the manifest itself and never reads the file. How much it fills in depends on the version. 0.19.0's `_scan_entry_points` (`hermes_cli/plugins.py:1658`) sets only name, source, path and key, so the version and description come out empty. HEAD's `discover_entrypoint_manifests` reads distribution metadata: version from `dist.version`, description from the `Summary` field. Either way the file's own `version:` would never have been read, which is why it carries none. Shipped for parity with directory plugins and future install-time UX. The `provides_hooks:` key matches the canonical guide.
+
+`hermes plugins list` does not show a pip-installed plugin on 0.19.0, and `hermes plugins enable` cannot enable one. The plugin is loaded when `plugins.enabled` in `config.yaml` names it and generations arrive in the UI. Reading the plugin list proves nothing.
 
 ## Upstream coupling
 
-If Hermes changes hook signatures or adds new lifecycle events, the source of truth is `hermes_cli/plugins.py:VALID_HOOKS` plus the hook reference at `website/docs/user-guide/features/hooks.md` in the upstream `NousResearch/hermes-agent` repo.
+If Hermes changes hook signatures or adds new lifecycle events, the source of truth is `hermes_cli/plugins.py:VALID_HOOKS` plus the hook reference at `website/docs/user-guide/features/hooks.md` in the upstream `NousResearch/hermes-agent` repo. Read the release users install from PyPI, not only the git checkout. HEAD carries hook kwargs no released version has, so a claim checked only against the checkout can be wrong for every user.
+
+## Hermes behaviour that bites when debugging an install
+
+- `~/.hermes/.env` is loaded with `override=True` (`hermes_cli/env_loader.py:314`), so a stale `AGENTO11Y_*` or provider key there beats a fresh shell export, with no warning.
+- One-shot `-z` calls `logging.disable(logging.CRITICAL)` (`hermes_cli/oneshot.py:198`) right after plugin discovery. Every plugin log record after that point is dropped, including the plugin's own "client initialized" and "installed TracerProvider" lines. Verify an install with interactive `hermes`, where those lines do reach `~/.hermes/logs/agent.log`.
+- A shell command that exits non-zero still arrives as `status: "ok"` on `post_tool_call`. `status: "error"` means the tool itself raised, so `set_exec_error` never fires for an ordinary failed command.
+- When `execute_tool` spans are missing from Tempo, Adaptive Traces sampling is the usual cause, not the exporter. Point `OTEL_EXPORTER_OTLP_ENDPOINT` at a local OTLP/HTTP sink to see what the plugin really sends before touching the code.
