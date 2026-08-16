@@ -7,10 +7,11 @@ fails, the failure is cached and handlers never retry.
 The SDK's ``Client()`` constructor reads canonical ``AGENTO11Y_*`` env vars
 itself, so the plugin leaves transport/auth resolution to it. The override it
 supplies is narrow: a generation-export ``User-Agent`` header identifying the
-plugin (matching the sibling plugins), ``content_capture=full`` when the user
-hasn't picked a mode (overriding the SDK's ``no_tool_content`` default which
-hides tool I/O in the UI), and ``protocol="none"`` in OTel-only mode (no
-generations creds) to suppress the SDK's HTTP exporter.
+plugin (matching the sibling plugins), the identity tags that only reach spans
+and metrics from here, ``content_capture=full`` when the user hasn't picked a
+mode (overriding the SDK's ``no_tool_content`` default which hides tool I/O in
+the UI), and ``protocol="none"`` in OTel-only mode (no generations creds) to
+suppress the SDK's HTTP exporter.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ import os
 import threading
 from typing import Any
 
-from . import _config, _otel
+from . import _config, _otel, _tags
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +54,20 @@ def _to_client_config(cfg: _config.PluginConfig):
     left unset). The plugin only layers in:
 
     - a generation-export ``User-Agent`` header identifying the plugin;
+    - the identity tags, which only reach spans and metrics through this
+      channel (``Client._set_client_tag_attributes``); per-generation seed tags
+      reach the export alone;
     - ``content_capture=full`` when ``AGENTO11Y_CONTENT_CAPTURE_MODE`` is unset
       (the SDK default ``no_tool_content`` renders agent UIs empty for hermes);
     - ``protocol="none"`` in OTel-only mode so the SDK's HTTP exporter doesn't
       dial the default ingest endpoint.
+
+    The SDK merges ``AGENTO11Y_TAGS`` underneath these, so a user's env tags
+    survive and ours win on a key collision.
     """
     from agento11y import ClientConfig, ContentCaptureMode, GenerationExportConfig
 
-    overrides: dict[str, Any] = {}
+    overrides: dict[str, Any] = {"tags": _tags.client_tags()}
     if not os.environ.get("AGENTO11Y_CONTENT_CAPTURE_MODE"):
         overrides["content_capture"] = ContentCaptureMode.FULL
 

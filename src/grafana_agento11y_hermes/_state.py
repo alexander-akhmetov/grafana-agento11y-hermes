@@ -17,6 +17,12 @@ when support for pre-v2026.6.5 hermes is dropped.
 Generation state carries the parsed input messages alongside the recorder,
 because ``set_result(input=[], output=...)`` would clear the input we seeded.
 
+Two more maps outlive the recorders. ``_GEN_LINKS`` keeps each request's
+generation id and span context so a tool execution can be recorded inside that
+generation's trace, which happens after the generation itself has closed.
+``_TURN_LAST_GEN`` keeps the last generation of each turn, which is the parent
+of the turn's next one.
+
 Tool executions don't need cross-hook state. We only register
 ``post_tool_call``, do all the work there, and close immediately.
 """
@@ -36,6 +42,11 @@ class GenState:
     system_prompt: str = ""
     # Set on the current path so a session drain can find this request's state.
     session_id: str = ""
+    # Pre-assigned at pre_api_request, so tools running after the generation
+    # closes can still name it, and so the close can chain the next call of the
+    # turn onto it.
+    generation_id: str = ""
+    turn_id: str = ""
     # LEGACY: partial fields filled in by post_api_request when ``set_result``
     # is deferred to post_llm_call to recover the assistant message. The
     # current path closes in post_api_request and never reads these.
@@ -50,8 +61,31 @@ class GenState:
     api_duration: float | None = None
 
 
+@dataclass(slots=True)
+class GenLink:
+    """What a tool execution needs to point back at the call that requested it.
+
+    Outlives the generation: the recorder closes in ``post_api_request`` and the
+    tools it asked for run after that.
+    """
+
+    generation_id: str
+    span_context: Any = None
+    session_id: str = ""
+    turn_id: str = ""
+
+
 # Current path: api_request_id -> state.
 _REQ_STATE: dict[str, GenState] = {}
+# api_request_id -> GenLink, read by post_tool_call. Entries are dropped per
+# session at session end, but a session that never ends (interrupt, one-shot
+# exit) would leak, so both this and _TURN_LAST_GEN are capped and drop
+# oldest-first. Insertion order is the eviction order, which dict guarantees.
+_GEN_LINKS: dict[str, GenLink] = {}
+# turn_id -> (generation_id, session_id) of the last generation kept in that
+# turn, which the next call of the turn names as its parent.
+_TURN_LAST_GEN: dict[str, tuple[str, str]] = {}
+_MAX_ENTRIES = 512
 # LEGACY: inferred key for hermes builds without api_request_id.
 _GEN_STATE: dict[tuple[str, str, int], GenState] = {}
 # Per-(task_id, session_id) running hermes-shaped message list. Populated by
@@ -98,6 +132,61 @@ def req_pop_session(session_id: str) -> list[GenState]:
         for k, _ in matching:
             del _REQ_STATE[k]
     return [v for _, v in matching]
+
+
+def _evict_oldest(mapping: dict) -> None:
+    """Drop from the front until the map is back under the cap. Caller holds the lock."""
+    while len(mapping) > _MAX_ENTRIES:
+        del mapping[next(iter(mapping))]
+
+
+def gen_link_put(request_id: str, link: GenLink) -> None:
+    if not request_id:
+        return
+    with _LOCK:
+        _GEN_LINKS[request_id] = link
+        _evict_oldest(_GEN_LINKS)
+
+
+def gen_link_get(request_id: str) -> GenLink | None:
+    if not request_id:
+        return None
+    with _LOCK:
+        return _GEN_LINKS.get(request_id)
+
+
+def gen_link_pop_session(session_id: str) -> None:
+    """Drop every link for a session, once its tools can no longer fire."""
+    with _LOCK:
+        for key in [k for k, v in _GEN_LINKS.items() if v.session_id == session_id]:
+            del _GEN_LINKS[key]
+
+
+def turn_last_gen_put(turn_id: str, generation_id: str, session_id: str) -> None:
+    if not (turn_id and generation_id):
+        return
+    with _LOCK:
+        _TURN_LAST_GEN[turn_id] = (generation_id, session_id)
+        _evict_oldest(_TURN_LAST_GEN)
+
+
+def turn_last_gen_get(turn_id: str) -> str:
+    if not turn_id:
+        return ""
+    with _LOCK:
+        entry = _TURN_LAST_GEN.get(turn_id)
+    return entry[0] if entry else ""
+
+
+def turn_last_gen_clear(turn_id: str) -> None:
+    with _LOCK:
+        _TURN_LAST_GEN.pop(turn_id, None)
+
+
+def turn_last_gen_clear_session(session_id: str) -> None:
+    with _LOCK:
+        for key in [k for k, v in _TURN_LAST_GEN.items() if v[1] == session_id]:
+            del _TURN_LAST_GEN[key]
 
 
 def gen_put(key: tuple[str, str, int], state: GenState) -> None:
@@ -181,6 +270,8 @@ def session_model_clear(session_id: str) -> None:
 def reset_for_tests() -> None:
     with _LOCK:
         _REQ_STATE.clear()
+        _GEN_LINKS.clear()
+        _TURN_LAST_GEN.clear()
         _GEN_STATE.clear()
         _CONVO_STATE.clear()
         _TURN_START_ASST_COUNT.clear()

@@ -12,8 +12,12 @@ import json
 import logging
 import os
 import random
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from opentelemetry import context as otel_context
+from opentelemetry import trace as otel_trace
 
 from . import _client, _errors, _redact, _state, _tags
 
@@ -314,6 +318,21 @@ def _assistant_to_sdk_messages(assistant_message: Any) -> list:
     return [sdk_msg] if sdk_msg is not None else []
 
 
+def _span_context_of(recorder: Any) -> Any:
+    """The recorder's span context, or ``None``. Never raises.
+
+    Today's ``GenerationRecorder`` always carries a span, so this is a guard
+    against a future recorder that does not, or a host tracer whose span
+    answers ``get_span_context`` differently. Losing the link is acceptable;
+    losing the generation is not.
+    """
+    try:
+        span = getattr(recorder, "span", None)
+        return None if span is None else span.get_span_context()
+    except Exception:
+        return None
+
+
 def _build_token_usage(usage: Any):
     from agento11y import TokenUsage
 
@@ -383,6 +402,7 @@ def on_post_llm_call(
     *,
     task_id: str = "",
     session_id: str = "",
+    turn_id: str = "",
     conversation_history: Any = None,
     assistant_response: Any = None,
     **_: Any,
@@ -392,11 +412,16 @@ def on_post_llm_call(
     ``conversation_history`` here is the FINAL state of the turn — includes
     every assistant message (with content/tool_calls) and every tool result.
     We pair the new assistant messages with our pending recorders in order.
+
+    Also ends the turn's generation chain, so the next turn starts a new one.
+    This hook does not fire for an interrupted turn, hence the session sweep in
+    ``on_session_end`` and the cap on the map itself.
     """
     _close_pending_for_session(session_id or "", conversation_history)
     key = _convo_key(task_id, session_id)
     _state.convo_clear(key)
     _state.turn_start_asst_count_clear(key)
+    _state.turn_last_gen_clear(turn_id)
 
 
 def on_pre_api_request(
@@ -442,7 +467,14 @@ def on_pre_api_request(
         # what the SDK uses for the span's start_time; GenState carries it so
         # the close path can compute completed_at = started_at + api_duration.
         started_at = datetime.now(UTC)
+        # Assign the id here rather than letting the SDK mint one inside end():
+        # the tool executions this call asks for run while it is still unknown
+        # otherwise. Same shape as the SDK's own framework handler.
+        generation_id = f"gen_{secrets.token_hex(8)}"
+        parent_generation_id = _state.turn_last_gen_get(turn_id)
         start = GenerationStart(
+            id=generation_id,
+            parent_generation_ids=[parent_generation_id] if parent_generation_id else [],
             model=ModelRef(provider=provider or "unknown", name=model or "unknown"),
             conversation_id=session_id or task_id or "",
             agent_name=_agent_name(),
@@ -450,12 +482,10 @@ def on_pre_api_request(
             system_prompt=system_prompt,
             started_at=started_at,
             max_tokens=_as_optional_int(max_tokens),
-            tags={
-                "agento11y.framework.name": "hermes",
-                "agento11y.framework.source": "plugin",
-                "agento11y.framework.language": "python",
-                **_tags.builtin_tags(),
-            },
+            # The framework tags and the rest of the built-ins ride on the
+            # ClientConfig instead, which is the only channel that also reaches
+            # spans and metrics. The SDK merges them in under these.
+            tags=_tags.seed_tags(),
             metadata={
                 "hermes.api_call_count": api_call_count,
                 "hermes.task_id": task_id,
@@ -472,12 +502,26 @@ def on_pre_api_request(
             input_messages=sdk_messages,
             system_prompt=system_prompt,
             session_id=session_id,
+            generation_id=generation_id,
+            turn_id=turn_id,
             started_at=started_at,
         )
         # post_tool_call carries neither model nor provider, so remember them
         # for the tool executions that follow this request.
         _state.session_model_put(session_id, model or "", provider or "")
         if api_request_id:
+            # Keyed on the request id, which post_tool_call also carries. A
+            # retry overwrites the link, so the tools of a request always point
+            # at the attempt that was live when they ran.
+            _state.gen_link_put(
+                api_request_id,
+                _state.GenLink(
+                    generation_id=generation_id,
+                    span_context=_span_context_of(recorder),
+                    session_id=session_id,
+                    turn_id=turn_id,
+                ),
+            )
             displaced = _state.req_put(api_request_id, state)
             if displaced is not None:
                 # A retry reused the id, so the earlier attempt was abandoned
@@ -583,6 +627,10 @@ def on_post_api_request(
             response_model=response_model or model or "",
             api_duration=api_duration,
         )
+        # Chain the turn's next call onto this one. Recorded here rather than at
+        # open time because this hook only sees the attempt hermes kept, so a
+        # superseded retry never becomes a parent.
+        _state.turn_last_gen_put(state.turn_id, state.generation_id, state.session_id)
         return
 
     state = _state.gen_get((task_id, session_id, int(api_call_count or 0)))
@@ -698,6 +746,57 @@ def _close_pending_for_session(session_id: str, conversation_history: Any) -> No
         )
 
 
+def _start_tool_execution_under(client: Any, start: Any, link: Any) -> Any:
+    """Start the tool execution inside the requesting generation's span context.
+
+    The SDK's ``start_tool_execution`` starts its span from the ambient OTel
+    context, so attaching the generation's context around the call is what makes
+    the tool span a child of it and puts both in one trace. The Go plugins get
+    this for free, because their ``StartGeneration`` returns a context; the
+    Python recorder never activates its span, so we do it by hand.
+
+    The generation span has already ended by then, since we close it in
+    ``post_api_request`` and the tools it asked for run after. OTel allows a
+    child of an ended span and the ids are right, but the child outlives the
+    parent's end, which a Go-produced trace does not do.
+
+    Without a usable parent this is exactly ``client.start_tool_execution``, so
+    the tool is still recorded as its own root span.
+    """
+    span_context = getattr(link, "span_context", None)
+    if span_context is None or not getattr(span_context, "is_valid", False):
+        return client.start_tool_execution(start)
+
+    token = otel_context.attach(otel_trace.set_span_in_context(otel_trace.NonRecordingSpan(span_context)))
+    try:
+        return client.start_tool_execution(start)
+    finally:
+        otel_context.detach(token)
+
+
+def _stamp_parent_generation(recorder: Any, link: Any) -> None:
+    """Name the requesting generation on the tool span. Never raises.
+
+    ``NoopToolExecutionRecorder``, returned for an empty tool name, has no span.
+
+    Speculative: ``llms.txt`` lists
+    ``agento11y.generation.parent_generation_ids`` under the attributes carried
+    by generation *and* tool spans, but no SDK writes it on an ``execute_tool``
+    span and no first-party plugin sets it there. It is one attribute, and the
+    trace parenting above stands on its own if the UI ignores it.
+    """
+    generation_id = getattr(link, "generation_id", "")
+    if not generation_id:
+        return
+    try:
+        span = getattr(recorder, "span", None)
+        if span is None:
+            return
+        span.set_attribute("agento11y.generation.parent_generation_ids", [generation_id])
+    except Exception as exc:
+        logger.debug("grafana-agento11y-hermes: parent generation attribute failed: %s", exc)
+
+
 def on_post_tool_call(
     *,
     tool_name: str = "",
@@ -706,6 +805,7 @@ def on_post_tool_call(
     task_id: str = "",
     session_id: str = "",
     tool_call_id: str = "",
+    api_request_id: str = "",
     duration_ms: int | None = None,
     status: str = "",
     error_type: str = "",
@@ -726,6 +826,10 @@ def on_post_tool_call(
     ``user → assistant(tool_calls) → tool``. Then start, set_result, and close
     the tool execution recorder, using ``duration_ms`` from hermes to backdate
     the span's started_at so its duration reflects the tool's wallclock time.
+
+    ``api_request_id`` names the LLM call that asked for this tool, which is
+    what puts the tool span in that generation's trace. See
+    ``_start_tool_execution_under``.
 
     ``status`` ``blocked`` and ``cancelled`` stay unrecorded, matching the
     first-party plugins, which only map ``error``.
@@ -784,19 +888,22 @@ def on_post_tool_call(
         start = ToolExecutionStart(
             tool_name=tool_name or "",
             tool_call_id=tool_call_id or "",
+            tool_type="function",
             conversation_id=session_id or task_id or "",
             agent_name=_agent_name(),
             request_model=request_model,
             request_provider=request_provider,
             started_at=started_at,
         )
-        recorder = client.start_tool_execution(start)
+        link = _state.gen_link_get(api_request_id)
+        recorder = _start_tool_execution_under(client, start, link)
         recorder.__enter__()
         cfg = _client._get_plugin_config()
         # cfg is non-None here: _get_client() above only returns a client after
         # _CONFIG was populated by `_client._get_client()`.
         max_chars = cfg.max_chars if cfg is not None else 12000
         try:
+            _stamp_parent_generation(recorder, link)
             # Before set_result, matching the first-party plugins. The recorder
             # has no call-error channel, so set_exec_error is the only way a
             # failed tool reaches the span and the failure metric.
@@ -841,6 +948,13 @@ def on_session_end(*, session_id: str = "", **_: Any) -> None:
                 response_model="",
                 api_duration=None,
             )
+
+    # No tool of this session can fire from here on, so the links it would have
+    # read go too. post_llm_call clears the turn chain of a completed turn; this
+    # covers the turns that were interrupted.
+    if session_id:
+        _state.gen_link_pop_session(session_id)
+        _state.turn_last_gen_clear_session(session_id)
 
     # LEGACY: same safety for the deferred path, where post_llm_call only fires
     # on a successful turn (agent/turn_finalizer.py:481 in hermes 0.19.0,

@@ -16,6 +16,7 @@ import time
 from typing import Any
 
 import pytest
+from opentelemetry import trace as otel_trace
 
 from grafana_agento11y_hermes import _client, _errors, _hooks, _state
 
@@ -28,6 +29,11 @@ CONVO = [
 def texts(messages: Any) -> list[str]:
     """Text of each SDK ``Message``, which stores content as typed parts."""
     return ["".join(p.text for p in m.parts if p.text) for m in messages]
+
+
+def attributes(span: Any) -> dict[str, Any]:
+    """Span attributes as a plain dict. The OTel SDK types them as optional."""
+    return dict(span.attributes or {})
 
 
 def _pre(client_unused: Any = None, **over: Any) -> None:
@@ -144,6 +150,31 @@ def test_session_end_closes_a_request_that_never_completed(patch_client: Any, en
     assert rec.set_result_calls[0]["output"] == []
     assert rec.set_result_calls[0]["input"]
     assert _state.req_pop("req-1") is None
+
+
+def test_session_end_drops_the_link_state_it_owns(patch_client: Any, env_creds: None) -> None:
+    """Nothing of this session can fire after it ends, so nothing should be kept."""
+    _pre()
+    _post()
+    assert _state.gen_link_get("req-1") is not None
+    assert _state.turn_last_gen_get("turn-1")
+
+    _hooks.on_session_end(session_id="sess-1")
+
+    assert _state.gen_link_get("req-1") is None
+    assert _state.turn_last_gen_get("turn-1") == ""
+
+
+def test_session_end_leaves_another_sessions_links_alone(patch_client: Any, env_creds: None) -> None:
+    _pre(api_request_id="req-mine", session_id="sess-1", turn_id="turn-mine")
+    _post(api_request_id="req-mine", session_id="sess-1", turn_id="turn-mine")
+    _pre(api_request_id="req-other", session_id="sess-2", turn_id="turn-other")
+    _post(api_request_id="req-other", session_id="sess-2", turn_id="turn-other")
+
+    _hooks.on_session_end(session_id="sess-1")
+
+    assert _state.gen_link_get("req-other") is not None
+    assert _state.turn_last_gen_get("turn-other")
 
 
 def test_session_end_only_drains_its_own_session(patch_client: Any, env_creds: None) -> None:
@@ -319,15 +350,44 @@ def test_max_tokens_is_recorded(patch_client: Any, env_creds: None, sent: Any, r
 
 
 def test_generations_carry_the_builtin_tags(patch_client: Any, env_creds: None) -> None:
-    """The cross-plugin tags, so hermes filters like cursor and codex do."""
+    """The cross-plugin tags, so hermes filters like cursor and codex do.
+
+    The SDK merges the client tags underneath the seed tags, so the export sees
+    the union whichever side a tag rides on.
+    """
     _pre()
 
-    tags = patch_client.start_generation_calls[0].tags
+    cfg = _client._get_plugin_config()
+    assert cfg is not None
+    tags = {**_client._to_client_config(cfg).tags, **patch_client.start_generation_calls[0].tags}
     assert tags["entrypoint"] == "hermes"
     assert tags["cwd"] == os.getcwd()
     # The tests run inside this plugin's own checkout.
     assert tags["git.branch"]
-    assert tags["agento11y.framework.name"] == "hermes", "framework tags survive the merge"
+    assert tags["agento11y.framework.name"] == "hermes"
+    assert tags["agento11y.framework.source"] == "plugin"
+    assert tags["agento11y.framework.language"] == "python"
+
+
+def test_the_identity_tags_ride_on_the_client_config(patch_client: Any, env_creds: None) -> None:
+    """Only client tags reach spans and metrics, as agento11y.tag.<key>."""
+    cfg = _client._get_plugin_config()
+    assert cfg is not None
+
+    tags = _client._to_client_config(cfg).tags
+
+    assert tags["agento11y.framework.name"] == "hermes"
+    assert tags["agento11y.framework.source"] == "plugin"
+    assert tags["agento11y.framework.language"] == "python"
+    assert tags["entrypoint"] == "hermes"
+    assert tags["git.branch"]
+    assert "cwd" not in tags, "one metric series per working directory is not worth the label"
+
+
+def test_a_tool_execution_is_typed_as_a_function(patch_client: Any, env_creds: None) -> None:
+    _hooks.on_post_tool_call(tool_name="read_file", session_id="sess-1", tool_call_id="call-1")
+
+    assert patch_client.start_tool_execution_calls[0].tool_type == "function"
 
 
 def test_effective_version_reads_the_shared_name(patch_client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -404,6 +464,243 @@ def test_a_tool_execution_carries_the_requesting_model(patch_client: Any, env_cr
     start = patch_client.start_tool_execution_calls[0]
     assert start.request_model == "claude-sonnet-4-6"
     assert start.request_provider == "anthropic"
+
+
+# --- the generations of one turn form a chain ---
+#
+# A tool loop is a DAG: call N+1's input is call N's output plus the tool
+# results. Chained per turn_id, so a session is a set of chains rather than one
+# long line. MoA fan-out puts concurrent requests in one turn and will chain
+# them in an arbitrary order; that is left as it is.
+
+
+def test_the_second_call_of_a_turn_names_the_first(patch_client: Any, env_creds: None) -> None:
+    _pre(api_request_id="req-1")
+    _post(api_request_id="req-1")
+    _pre(api_request_id="req-2")
+
+    first, second = patch_client.start_generation_calls
+    assert first.parent_generation_ids == []
+    assert second.parent_generation_ids == [first.id]
+
+
+def test_a_superseded_attempt_is_not_the_next_calls_parent(patch_client: Any, env_creds: None) -> None:
+    """The chain is written at close time, and a displaced attempt never closes clean."""
+    _pre(api_request_id="req-1")
+    _pre(api_request_id="req-1")
+    _post(api_request_id="req-1")
+    _pre(api_request_id="req-2")
+
+    abandoned, kept, following = patch_client.start_generation_calls
+    assert abandoned.id != kept.id
+    assert following.parent_generation_ids == [kept.id]
+
+
+def test_a_new_turn_starts_a_new_chain(patch_client: Any, env_creds: None) -> None:
+    _pre(api_request_id="req-1", turn_id="turn-1")
+    _post(api_request_id="req-1", turn_id="turn-1")
+
+    _pre(api_request_id="req-2", turn_id="turn-2")
+
+    assert patch_client.start_generation_calls[1].parent_generation_ids == []
+
+
+def test_post_llm_call_ends_the_turns_chain(patch_client: Any, env_creds: None) -> None:
+    _pre()
+    _post()
+
+    _hooks.on_post_llm_call(task_id="task-1", session_id="sess-1", turn_id="turn-1")
+
+    assert _state.turn_last_gen_get("turn-1") == ""
+
+
+def test_a_failed_call_is_not_a_parent(patch_client: Any, env_creds: None) -> None:
+    _pre(api_request_id="req-1")
+    _hooks.on_api_request_error(api_request_id="req-1", error="boom", status_code=500)
+
+    _pre(api_request_id="req-2")
+
+    assert patch_client.start_generation_calls[1].parent_generation_ids == []
+
+
+def test_the_link_maps_drop_their_oldest_entries(patch_client: Any, env_creds: None) -> None:
+    """A process that runs for days must not grow them without limit."""
+    overflow = _state._MAX_ENTRIES + 10
+    for index in range(overflow):
+        _state.gen_link_put(f"req-{index}", _state.GenLink(generation_id=f"gen-{index}"))
+        _state.turn_last_gen_put(f"turn-{index}", f"gen-{index}", "sess-1")
+
+    assert _state.gen_link_get("req-0") is None
+    assert _state.turn_last_gen_get("turn-0") == ""
+    assert _state.gen_link_get(f"req-{overflow - 1}") is not None
+    assert _state.turn_last_gen_get(f"turn-{overflow - 1}") == f"gen-{overflow - 1}"
+
+
+# --- tool executions linked to the call that requested them ---
+
+
+def test_a_tool_span_names_the_generation_that_requested_it(patch_client: Any, env_creds: None) -> None:
+    _pre()
+    generation_id = patch_client.start_generation_calls[0].id
+    assert generation_id
+
+    _hooks.on_post_tool_call(
+        tool_name="read_file",
+        session_id="sess-1",
+        tool_call_id="call-1",
+        api_request_id="req-1",
+    )
+
+    attributes = patch_client._next_tool_recorder.span.attributes
+    assert attributes["agento11y.generation.parent_generation_ids"] == [generation_id]
+
+
+def test_a_tool_span_is_started_inside_the_generations_trace(
+    patch_client: Any,
+    env_creds: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SDK parents the span off the ambient context, so that is what we set."""
+    _pre()
+    generation_context = patch_client._next_gen_recorder.span.get_span_context()
+    ambient: list[Any] = []
+    original = patch_client.start_tool_execution
+
+    def capture(start: Any) -> Any:
+        ambient.append(otel_trace.get_current_span().get_span_context())
+        return original(start)
+
+    monkeypatch.setattr(patch_client, "start_tool_execution", capture)
+
+    _hooks.on_post_tool_call(
+        tool_name="read_file",
+        session_id="sess-1",
+        tool_call_id="call-1",
+        api_request_id="req-1",
+    )
+
+    assert ambient[0].trace_id == generation_context.trace_id
+    assert ambient[0].span_id == generation_context.span_id
+    assert not otel_trace.get_current_span().get_span_context().is_valid, "the context must be detached again"
+
+
+def test_a_tool_of_an_unknown_request_is_still_recorded(patch_client: Any, env_creds: None) -> None:
+    """Fail open: no link resolves, so the tool becomes its own root span."""
+    _pre()
+
+    _hooks.on_post_tool_call(
+        tool_name="read_file",
+        args={"path": "/tmp/x"},
+        result="contents",
+        session_id="sess-1",
+        tool_call_id="call-1",
+        api_request_id="req-does-not-exist",
+    )
+
+    rec = patch_client._next_tool_recorder
+    assert rec.exited
+    assert rec.set_result_calls[0]["arguments"] == {"path": "/tmp/x"}
+    assert rec.set_result_calls[0]["result"] == "contents"
+    assert "agento11y.generation.parent_generation_ids" not in rec.span.attributes
+
+
+def test_a_tool_without_a_request_id_is_still_recorded(patch_client: Any, env_creds: None) -> None:
+    _pre()
+
+    _hooks.on_post_tool_call(tool_name="read_file", session_id="sess-1", tool_call_id="call-1")
+
+    rec = patch_client._next_tool_recorder
+    assert rec.exited
+    assert "agento11y.generation.parent_generation_ids" not in rec.span.attributes
+
+
+def test_a_recorder_without_a_span_does_not_break_the_hook(
+    patch_client: Any,
+    env_creds: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``NoopToolExecutionRecorder`` has no span, and neither does a stubbed one."""
+    _pre()
+    original = patch_client.start_tool_execution
+
+    def spanless(start: Any) -> Any:
+        recorder = original(start)
+        del recorder.span
+        return recorder
+
+    monkeypatch.setattr(patch_client, "start_tool_execution", spanless)
+
+    _hooks.on_post_tool_call(
+        tool_name="read_file",
+        session_id="sess-1",
+        tool_call_id="call-1",
+        api_request_id="req-1",
+    )
+
+    assert patch_client._next_tool_recorder.exited
+
+
+def test_the_exported_spans_share_a_trace_and_carry_the_client_tags(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    env_creds: None,
+) -> None:
+    """Against the real SDK, since the fake client starts no spans of its own.
+
+    What Tempo has to show: one trace per LLM call, the tool spans under it, and
+    the identity tags on both.
+    """
+    import agento11y
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from grafana_agento11y_hermes import _otel
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    real_client = agento11y.Client
+
+    def factory(config: Any) -> Any:
+        # Everything the plugin resolved, plus a tracer that keeps the spans.
+        config.tracer = provider.get_tracer("test")
+        config.generation_export.protocol = "none"
+        client = real_client(config)
+        # The only real client the suite builds, and nothing else closes it:
+        # reset_module_state drops the reference without shutting it down, and
+        # Client.__init__ has already started a flush timer thread that would
+        # then wake once a second for the rest of the run. Zeroing the interval
+        # is not the way out, because the SDK clamps a non-positive one to 1ms.
+        request.addfinalizer(client.shutdown)
+        return client
+
+    monkeypatch.setattr(agento11y, "Client", factory)
+    monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
+
+    _pre()
+    _hooks.on_post_tool_call(
+        tool_name="read_file",
+        session_id="sess-1",
+        tool_call_id="call-1",
+        api_request_id="req-1",
+    )
+    _post()
+
+    spans = {span.name.split()[0]: span for span in exporter.get_finished_spans()}
+    generation, tool = spans["generateText"], spans["execute_tool"]
+    assert tool.context.trace_id == generation.context.trace_id
+    assert tool.parent is not None and tool.parent.span_id == generation.context.span_id
+    assert attributes(tool)["agento11y.generation.parent_generation_ids"] == (
+        attributes(generation)["agento11y.generation.id"],
+    )
+    for span in (generation, tool):
+        assert attributes(span)["agento11y.tag.agento11y.framework.name"] == "hermes"
+        assert attributes(span)["agento11y.tag.entrypoint"] == "hermes"
+    # mode stays SYNC, which is what makes the operation generateText. See
+    # "mode stays SYNC" in CLAUDE.md for why streaming is not detectable here.
+    assert attributes(generation)["gen_ai.operation.name"] == "generateText"
 
 
 def test_current_hermes_stops_maintaining_the_legacy_convo(patch_client: Any, env_creds: None) -> None:

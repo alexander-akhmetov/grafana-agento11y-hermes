@@ -20,15 +20,15 @@ Each channel is independently optional. If only one is configured, only that one
 ## Layout
 
 - `__init__.py`: `register(ctx)` wires the hook handlers into Hermes's plugin context and applies the legacy env shim first.
-- `_hooks.py`: `pre_api_request` / `post_api_request` (LLM call to generation), `api_request_error` (failed LLM call to a marked generation, then a bounded flush), `post_tool_call` (tool to tool execution), `on_session_end` / `on_session_finalize` (flush). Tags generations with `agento11y.framework.{name,source,language}` so the backend treats us like other framework integrations, plus the cross-plugin `git.branch` / `cwd` / `entrypoint` from `_tags.py`.
-- `_client.py`: lazy singleton `Client`. Build via the SDK's `ClientConfig` plus `GenerationExportConfig(protocol="http", auth=AuthConfig(mode="basic", ...))` when generation creds are set, `protocol="none"` otherwise. Init failure is cached.
+- `_hooks.py`: `pre_api_request` / `post_api_request` (LLM call to generation), `api_request_error` (failed LLM call to a marked generation, then a bounded flush), `post_tool_call` (tool to tool execution), `on_session_end` / `on_session_finalize` (flush). Mints the generation id at pre time, chains the generations of a turn, and starts each tool execution inside the span context of the call that requested it. See "Tags, linking and generation mode".
+- `_client.py`: lazy singleton `Client`. Build via the SDK's `ClientConfig` plus `GenerationExportConfig(protocol="http", auth=AuthConfig(mode="basic", ...))` when generation creds are set, `protocol="none"` otherwise. Also carries the identity tags, which reach spans and metrics from here only. Init failure is cached.
 - `_otel.py`: installs `TracerProvider` and `MeterProvider` with OTLP HTTP exporters that read the `OTEL_EXPORTER_OTLP_*` envs themselves. The only kwargs passed are the derived auth headers and, for `AGENTO11Y_OTEL_EXPORTER_OTLP_ENDPOINT`, the per-signal endpoint the exporters cannot resolve. Each provider is checked independently, so the host can own one and let the plugin install the other. Force-flushes only providers we installed.
 - `_config.py`: reads plugin-only knobs under `AGENTO11Y_HERMES_*` and tracks two presence flags, `generations_configured` (from `AGENTO11Y_AUTH_TOKEN` / `AGENTO11Y_AUTH_MODE`) and `otel_configured` (from `OTEL_EXPORTER_OTLP_ENDPOINT` or its `AGENTO11Y_`-prefixed alias, which `otel_endpoint_override` carries to `_otel.py` because only the standard name reaches the exporters). Channel decisions in `_client.py` and `_otel.py` are driven by these flags.
 - `_compat.py`: copies retired `SIGIL_*` env vars to their `AGENTO11Y_*` names in `os.environ` before anything reads config. The old name stays, because hermes spawns subprocesses for tool calls and a telemetry plugin must not change what the host passes to its children; the cost is a duplicate SDK warning. Reads the SDK's own `_LEGACY_ENV_RENAMES` so the table cannot drift, and adds the few it omits. Temporary: delete it once the SDK reads the old names itself.
 - `_redact.py`: structural payload bounding (depth 4, 50 entries, `AGENTO11Y_HERMES_MAX_CHARS` truncate). No PII regex.
 - `_errors.py`: `ProviderCallError` / `SupersededAttempt`, the sentinels `set_call_error` takes. That method needs a real `Exception`: a string reaches `span.record_exception` and raises inside `end()` under `ContentCaptureMode.FULL`, leaking the span. Both carry `status_code`, which is how the SDK picks `error.category`.
-- `_tags.py`: cached `git.branch` / `cwd` / `entrypoint`, matching the first-party tag builder. Reads `.git/HEAD` directly (following `gitdir:` for worktrees), never shells out, and resolves once per process.
-- `_state.py`: `_REQ_STATE` maps `api_request_id` to an open recorder. `_SESSION_MODEL` holds the last model/provider per session, because `post_tool_call` carries neither and the tool duration metric needs `gen_ai.request.model`. `_GEN_STATE` and the convo maps are the legacy fallback.
+- `_tags.py`: cached `git.branch` / `cwd` / `entrypoint`, matching the first-party tag builder, split into `client_tags()` and `seed_tags()`. Reads `.git/HEAD` directly (following `gitdir:` for worktrees), never shells out, and resolves once per process.
+- `_state.py`: `_REQ_STATE` maps `api_request_id` to an open recorder. `_GEN_LINKS` maps it to the generation id and span context, and outlives the recorder, because the tools a call asks for run after it closes. `_TURN_LAST_GEN` maps `turn_id` to the last generation kept in that turn. `_SESSION_MODEL` holds the last model/provider per session, because `post_tool_call` carries neither and the tool duration metric needs `gen_ai.request.model`. `_GEN_STATE` and the convo maps are the legacy fallback.
 
 ## Hard invariants
 
@@ -37,6 +37,39 @@ Each channel is independently optional. If only one is configured, only that one
 - OTel auto-setup respects host providers. Only install a provider when the global is the default proxy. Track installed providers separately so `force_flush` only touches ours.
 - Use the SDK's exporter for generations: `GenerationExportConfig(protocol="http", auth=AuthConfig(mode="basic", ...))`. Do not hand-roll basic auth or POST loops, because the SDK has retry, batching and queueing built in.
 - Do not reinvent OTel env resolution. The OTLP HTTP exporters already read `OTEL_EXPORTER_OTLP_ENDPOINT` (appending `/v1/traces` and `/v1/metrics`), `OTEL_EXPORTER_OTLP_HEADERS`, and `OTEL_EXPORTER_OTLP_INSECURE`. Construct them with no kwargs and let them do the work.
+
+## Tags, linking and generation mode
+
+### Client tags versus seed tags
+
+Tags reach the backend by two routes with different reach. `ClientConfig.tags` reach everything the SDK emits: the generations export, every span as `agento11y.tag.<key>`, and the duration metrics as label dimensions (`Client._set_client_tag_attributes`, `client.py:1146`). `GenerationStart.tags` reach the generations export alone. `_start_generation` merges the client tags under the seed tags (`client.py:874`), so a generation carries the union either way.
+
+So `_tags.client_tags()` holds the three `agento11y.framework.*` constants plus `entrypoint` and `git.branch`, and `_tags.seed_tags()` holds `cwd` alone. `cwd` stays off the client tags because a client tag becomes a label on `gen_ai.client.operation.duration` and on the tool duration histogram, and one metric series per working directory is a cost every user of the plugin pays. The Go first-party equivalent restricts client tags to user / repo / branch and makes even those opt-in. Anyone who wants `cwd` on spans can add it through `AGENTO11Y_TAGS`, which the SDK merges underneath ours.
+
+### Linking a tool span to the generation that requested it
+
+`ToolExecutionStart` has no `tags`, no `parent_generation_ids` and no `mode` field (`models.py:344`). A tool execution is one OTel span plus one duration histogram sample, and there is no `ToolExecution` message in the ingest proto, so nothing about a tool reaches the generations endpoint. The client tags and the span itself are the only places to put anything.
+
+`pre_api_request` mints the generation id as `gen_<16 hex>` rather than leaving it to the SDK, which only assigns one inside `end()`, where it is too late for a tool to name it. The id and the recorder's span context go into `_state._GEN_LINKS` under `api_request_id`. `post_tool_call` carries the same `api_request_id`, so it finds both: `_start_tool_execution_under` attaches a context holding that span context around `client.start_tool_execution`, and `_stamp_parent_generation` writes `agento11y.generation.parent_generation_ids` on the tool recorder's span.
+
+Two caveats:
+
+- The attribute is speculative. `llms.txt` lists it under the attributes carried by generation and tool spans, but no SDK writes it on an `execute_tool` span and no first-party plugin sets it there. It is one line and removable. The trace parenting is the half with first-party precedent (`plugins/agento11y/internal/emit/emit.go`) and does not depend on it.
+- The generation span has already ended when the tool span starts, because the plugin closes it in `post_api_request` and the tools run after that. OTel permits a child of an ended span and the ids are correct, but the child's time range extends past the parent's end. The Go plugins nest while the generation is still open, so their traces do not look like this.
+
+`_GEN_LINKS` outlives the recorder, so it needs its own bound: entries are dropped per session in `on_session_end`, and the map is capped with oldest-first eviction for the sessions that never end.
+
+### Generations of one turn chain
+
+`parent_generation_ids` on a generation names the previous kept generation of the same `turn_id`. That is the DAG the Dependencies tab draws, and a tool loop is genuinely one: call N+1's input is call N's output plus the tool results. `_TURN_LAST_GEN` is written in `on_post_api_request`, at close time rather than open time, so a superseded retry attempt never becomes a parent. It is cleared per turn in `on_post_llm_call`, per session in `on_session_end`, and capped like the link map, because `post_llm_call` does not fire for an interrupted turn.
+
+Chained per turn rather than per session, which is narrower than opencode's per-session chain. MoA fan-out puts concurrent requests in one turn and will chain them in whatever order they close. That is left as it is.
+
+### `mode` stays SYNC
+
+Every generation is `GenerationMode.SYNC`, so `gen_ai.operation.name` is `generateText`, which the UI recognizes. No hook at the 0.16.0 floor carries a per-request streaming signal: hermes copies `api_kwargs` and adds `stream=True` after `pre_api_request` has fired (`agent/auxiliary_client.py`), so the `request` payload does not show it. The `on_stream_*` hooks exist only at hermes HEAD, they dispatch on a worker thread with a bounded queue (`agent/plugin_stream_hooks.py`) so they can lose the race with `post_api_request`, and registering an unknown hook name makes 0.19.0 log a warning listing every valid hook.
+
+The cost of SYNC is the `gen_ai.client.time_to_first_token` histogram, but the mode is only half of what blocks it. The SDK records that histogram when the operation is `streamText` **and** the recorder was given a first-token timestamp (`client.py:1197`), which means a `set_first_token_at` call the plugin has no signal to make: it needs a per-token event, and the only hermes hook that carries one is the HEAD-only `on_stream_*` family. So STREAM alone would rename the operation and still leave the histogram empty. All five Go hook-based first-party plugins use SYNC for the same reason.
 
 ## Hooks contract
 
@@ -83,7 +116,7 @@ Two payload facts to keep in mind when reading `_hooks.py`:
 
 `api_request_id` appears on both hooks and disambiguates concurrent requests in one session, so the pair is exact:
 
-- `pre_api_request`: open a recorder, seed `input` from `conversation_history`, store `GenState` in `_state._REQ_STATE` under `api_request_id`.
+- `pre_api_request`: open a recorder, seed `input` from `conversation_history`, store `GenState` in `_state._REQ_STATE` under `api_request_id`, and a `GenLink` in `_state._GEN_LINKS` under the same key.
 - `post_api_request`: pop that state, `set_result(input, output=assistant_message, usage, ...)`, close. `completed_at` is pinned to `started_at + api_duration` so the span covers the LLM call.
 - `api_request_error`: pop that state, close it carrying the provider error.
 - `on_session_end`: close anything left open, with empty output.
@@ -101,7 +134,7 @@ Two early returns skip `finalize_turn` (`agent/conversation_loop.py:5784`) and t
 - Retry exhaustion returns at `:4287`. Verified harmless: every attempt was already closed by `api_request_error`, so nothing leaks.
 - The thinking-budget-exhausted path returns at `:1947`, straight after `pre_api_request` and before any hook that could close a recorder. Interactive mode closes it on the next turn's `req_pop_session` or at the CLI exit hook. One-shot mode has neither, and it exits through `hermes_cli/main.py` `_exit_after_oneshot`, which calls `os._exit` and so skips the SDK's atexit flush, so an open recorder there has nowhere left to go.
 
-Tool executions are handled entirely in `post_tool_call`, opened and closed in one go. `status == "error"` becomes `set_exec_error`, called before `set_result`, matching the first-party plugins. `blocked` and `cancelled` stay unrecorded, also matching them.
+Tool executions are handled entirely in `post_tool_call`, opened and closed in one go. That hook carries `api_request_id` too, which is how the tool span finds the generation that requested it. `status == "error"` becomes `set_exec_error`, called before `set_result`, matching the first-party plugins. `blocked` and `cancelled` stay unrecorded, also matching them.
 
 ### LEGACY: hermes older than v2026.6.5 (PyPI 0.16.0)
 

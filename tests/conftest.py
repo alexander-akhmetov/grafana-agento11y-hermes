@@ -9,18 +9,48 @@ ordering doesn't leak.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from opentelemetry import trace
 
 from grafana_agento11y_hermes import _client, _hooks, _state, _tags
+
+
+class FakeSpan:
+    """Stand-in for the OTel span the SDK recorders expose.
+
+    Hands out a valid ``SpanContext`` so the parenting path in
+    ``on_post_tool_call`` behaves as it does against the real SDK, and records
+    attribute writes.
+    """
+
+    _next_id = itertools.count(1)
+
+    def __init__(self) -> None:
+        ident = next(FakeSpan._next_id)
+        self.attributes: dict[str, Any] = {}
+        self._context = trace.SpanContext(
+            trace_id=ident,
+            span_id=ident,
+            is_remote=False,
+            trace_flags=trace.TraceFlags(trace.TraceFlags.SAMPLED),
+        )
+
+    def get_span_context(self) -> trace.SpanContext:
+        return self._context
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        self.attributes[key] = value
 
 
 class FakeRecorder:
     """Records lifecycle calls for assertions."""
 
     def __init__(self) -> None:
+        self.span = FakeSpan()
         self.entered = False
         self.exited = False
         self.set_result_calls: list[dict[str, Any]] = []
