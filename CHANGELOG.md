@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.0](https://github.com/alexander-akhmetov/grafana-agento11y-hermes/compare/0.8.0...0.9.0) - 2026-08-16
+
+- Update the end-to-end tests for the new capture and fix false passes
+- Record max_tokens, temperature, top_p and tool_choice from request body
+- implement system prompt capture mode for hook payloads
+- Tag tool spans and link them to the generation that requested them
+- Document content capture mode
+- Add end-to-end tests and update the hermes notes from them
+- update hermes version compatibility
+- Update Dependabot
+- Update README.md
+- Update README.md
+
 ## [0.6.0](https://github.com/alexander-akhmetov/grafana-agento11y-hermes/compare/0.5.0...0.6.0) - 2026-08-15
 
 - Publish releases to PyPI
