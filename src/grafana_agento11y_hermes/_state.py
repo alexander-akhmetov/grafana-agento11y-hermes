@@ -2,9 +2,11 @@
 
 Two maps, one per pairing strategy.
 
-``_REQ_STATE`` is the current path. Hermes v2026.6.5 and later pass
-``api_request_id`` to both ``pre_api_request`` and ``post_api_request``, which
-is a unique id per API call, so the pre/post pair needs no inference.
+``_REQ_STATE`` is the current path. Hermes v2026.6.5 and later, which is
+``hermes-agent`` 0.16.0 and later on PyPI, pass ``api_request_id`` to both
+``pre_api_request`` and ``post_api_request``. It is one id per API call, so the
+pre/post pair needs no inference. The id is not unique per hook invocation:
+every retry re-fires ``pre_api_request`` with the same one.
 
 ``_GEN_STATE`` and the convo maps below serve the legacy path, for hermes
 builds older than v2026.6.5 that send no ``api_request_id``. There the pair is

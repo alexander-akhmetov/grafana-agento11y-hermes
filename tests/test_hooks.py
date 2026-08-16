@@ -528,7 +528,7 @@ def test_close_pending_handles_discarded_retry(patch_client) -> None:
 
     Hermes increments ``api_call_count`` on every iteration, including ones
     whose response is discarded (incomplete <REASONING_SCRATCHPAD>, invalid-
-    response retries — see run_agent.py:12944, 11428). The discarded
+    response retries). The discarded
     iteration's recorder is still in ``_GEN_STATE`` when ``post_llm_call``
     fires, but no assistant message was appended for it. End-anchored
     pairing closes the discarded recorder with empty output rather than

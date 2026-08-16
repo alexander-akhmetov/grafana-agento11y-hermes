@@ -41,20 +41,20 @@ def register(ctx) -> None:
     apply_legacy_env()
 
     # LEGACY: pre_llm_call / post_llm_call are turn-scoped and serve only the
-    # fallback for hermes older than v2026.6.5, which sends no api_request_id.
-    # On current hermes the API-request hooks carry both the input messages and
-    # the assistant message, so a generation opens and closes within them.
+    # fallback for hermes older than v2026.6.5 (PyPI 0.16.0), which sends no
+    # api_request_id. On current hermes the API-request hooks carry both the
+    # input messages and the assistant message, so a generation opens and
+    # closes within them.
     #
-    # We deliberately do not register pre_tool_call. Hermes invokes it without
-    # session_id / tool_call_id (they default to "" in
-    # get_pre_tool_call_block_message), so any state stored under a pre-time key
-    # would never match the post_tool_call key. Doing all tool work in
-    # post_tool_call sidesteps the mismatch.
+    # We deliberately do not register pre_tool_call: post_tool_call is the only
+    # hook of the pair carrying the result, the status and duration_ms, so a
+    # recorder opened in pre would sit open across the call for nothing.
     #
-    # api_request_error closes the generation for a call that failed. It does
-    # not cover every retry: most hermes retry paths re-enter pre_api_request
-    # with the same api_request_id and fire no error hook, which is why
-    # on_pre_api_request also closes whatever a repeated id displaces.
+    # api_request_error closes the generation for a call that failed. It covers
+    # the retryable provider failures, but not every retry path: some re-enter
+    # pre_api_request with the same api_request_id and fire no hook at all,
+    # which is why on_pre_api_request also closes whatever a repeated id
+    # displaces.
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     ctx.register_hook("post_llm_call", on_post_llm_call)
     ctx.register_hook("pre_api_request", on_pre_api_request)

@@ -1,9 +1,10 @@
-"""Request-scoped generation pairing, the path hermes v2026.6.5+ takes.
+"""Request-scoped generation pairing, the path hermes v2026.6.5+ (PyPI 0.16.0) takes.
 
-These tests use the kwarg names hermes actually sends, captured from
-``agent/conversation_loop.py`` (``pre_api_request`` at :2795, ``post_api_request``
-at :6417). The older tests in ``test_hooks.py`` omit ``api_request_id`` and so
-exercise the legacy fallback instead.
+These tests use the kwarg names hermes actually sends, captured from the
+``pre_api_request`` and ``post_api_request`` call sites in
+``agent/conversation_loop.py`` (``:1357`` and ``:4486`` in hermes 0.19.0). The
+older tests in ``test_hooks.py`` omit ``api_request_id`` and so exercise the
+legacy fallback instead.
 """
 
 from __future__ import annotations

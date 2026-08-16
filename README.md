@@ -33,7 +33,7 @@ plugins:
     - agento11y
 ```
 
-> Hermes's `plugins enable` CLI does not see pip-installed plugins yet. It only scans `~/.hermes/plugins/` and the bundled directory. Editing the YAML directly is the workaround.
+> Hermes's `plugins enable` CLI does not see pip-installed plugins yet. It only scans `~/.hermes/plugins/` and the bundled directory. Editing the YAML directly is the workaround. `hermes plugins list` will not show the plugin either, so check that it works from the data arriving in Grafana Cloud.
 
 <details>
 <summary>Upgrading from hermes-plugin-sigil</summary>
@@ -65,6 +65,8 @@ Everything comes from one page in your stack:
 2. Click **Copy as environment variables**.
 3. Put the block in the environment hermes starts from.
 
+If you keep it in `~/.hermes/.env` instead, hermes loads that file with override on, so a value there beats the same variable exported in your shell, with no warning.
+
 The block you get:
 
 ```bash
@@ -80,6 +82,8 @@ OTEL_EXPORTER_OTLP_HEADERS='Authorization=Basic <base64 of "123456:glc_...">'
 If you do not have a Grafana Cloud account, create one at https://grafana.com/auth/sign-up/create-user/. The free tier is enough.
 
 ## Verify
+
+Use interactive hermes. One-shot mode (`hermes -z`) disables logging for the whole run, so it writes none of the lines below.
 
 ```bash
 AGENTO11Y_DEBUG=true hermes

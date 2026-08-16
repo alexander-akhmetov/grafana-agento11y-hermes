@@ -149,6 +149,11 @@ their behalf without confirmation.
 The pasted block has no `export` keywords, so a shell profile or `.envrc`
 needs `export ` in front of each line.
 
+If the user keeps credentials in `~/.hermes/.env`, tell them hermes loads
+that file with override on (`hermes_cli/env_loader.py`), so a value there
+beats the same variable exported in the shell, with no warning. A stale
+token in that file is a silent failure.
+
 ### Optional knobs (do not set unless the user asks)
 
 | Variable | Default | When to change |
@@ -163,7 +168,10 @@ needs `export ` in front of each line.
 
 ## Step 5: Verify
 
-Run:
+Run interactive hermes. One-shot mode (`hermes -z`) calls
+`logging.disable()` for the whole run (`hermes_cli/oneshot.py`), so no
+plugin log line reaches any file and the check below cannot tell you
+whether the install works.
 
 ```bash
 AGENTO11Y_DEBUG=true hermes
@@ -189,6 +197,9 @@ appear within a few seconds. Check **Traces** (filter for
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Plugin lines never appear in `agent.log` | Installed into wrong Python env | Run `which hermes`, install into that env |
+| Plugin lines never appear in `agent.log`, but generations do arrive | Checked with `hermes -z`, which disables logging for the run | Check with interactive `hermes` |
+| Credentials look right but the plugin reads old ones | `~/.hermes/.env` overrides the shell environment | Update or remove the stale entry in `~/.hermes/.env` |
+| `hermes plugins list` does not show `agento11y` | Hermes does not list pip-installed plugins | Expected. Confirm from `plugins.enabled` in `config.yaml` and from data arriving |
 | Plugin loads but `generations=not_configured` | `AGENTO11Y_AUTH_TOKEN` empty or `AGENTO11Y_AUTH_MODE=none` | Re-export and reload shell |
 | `401 Unauthorized` on generations | The token line is still a placeholder, or the token cannot write generations | Create the token on the setup page and copy the block again |
 | `401` on OTLP traces/metrics | The token cannot write traces and metrics, or the header was not copied from the setup page | Create the token on the setup page and copy the block again |

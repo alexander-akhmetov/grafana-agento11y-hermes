@@ -36,10 +36,11 @@ _SAW_REQUEST_ID = False
 def _warn_legacy_hermes_once() -> None:
     """Warn that hermes is too old to pair requests exactly.
 
-    hermes v2026.6.5 added ``api_request_id`` and the input/output messages to
-    the API-request hooks. Older builds fall back to matching on
-    ``api_call_count`` and recovering output from ``post_llm_call``, which
-    cannot tell apart two requests running concurrently in one session.
+    hermes v2026.6.5, which is ``hermes-agent`` 0.16.0 on PyPI, added
+    ``api_request_id`` and the input/output messages to the API-request hooks.
+    Older builds fall back to matching on ``api_call_count`` and recovering
+    output from ``post_llm_call``, which cannot tell apart two requests running
+    concurrently in one session.
     """
     global _WARNED_LEGACY_HERMES
     if _WARNED_LEGACY_HERMES:
@@ -48,7 +49,7 @@ def _warn_legacy_hermes_once() -> None:
     logger.warning(
         "grafana-agento11y-hermes: this hermes does not send api_request_id. "
         "Using the legacy matching path, which mis-attributes concurrent "
-        "requests in one session. Upgrade to hermes v2026.6.5 or newer."
+        "requests in one session. Upgrade to hermes v2026.6.5 (PyPI 0.16.0) or newer."
     )
 
 
@@ -676,10 +677,9 @@ def _close_pending_for_session(session_id: str, conversation_history: Any) -> No
     # End-anchor: pair the LAST n_new pending recorders with the n_new new
     # assistant messages. Hermes increments api_call_count on every iteration,
     # including discarded retries (incomplete <REASONING_SCRATCHPAD>, invalid-
-    # response retries — see run_agent.py:12944, 11428), so pending can have
-    # more entries than there are kept assistants. Anchoring from the end is
-    # correct because post_llm_call only fires when ``final_response`` is set
-    # (run_agent.py:13771), so the LAST iteration was always kept; leading
+    # response retries), so pending can have more entries than there are kept
+    # assistants. Anchoring from the end is correct because post_llm_call only
+    # fires when ``final_response`` is set, so the LAST iteration was kept; leading
     # discards leave their recorder with no output rather than stealing a
     # message from a successful call or a prior turn.
     n_new = len(new_asst)
@@ -714,12 +714,12 @@ def on_post_tool_call(
 ) -> None:
     """Record the tool execution and extend the running convo for the next call.
 
-    All work is done here, not split with pre_tool_call. Current hermes invokes
-    pre_tool_call from ``run_agent.py:9060`` and ``run_agent.py:9520`` without
-    ``session_id`` / ``tool_call_id`` (they default to ``""`` in
-    ``get_pre_tool_call_block_message``), but post_tool_call (``model_tools.py:732``)
-    always carries the real ids. Doing everything in post avoids a key mismatch
-    between the two hooks that would leak recorders and misroute convo state.
+    All work is done here, not split with pre_tool_call. post_tool_call
+    (``_emit_post_tool_call_hook``, ``model_tools.py:974`` in hermes 0.19.0) is
+    the only hook of the pair carrying the result, the status and
+    ``duration_ms``, so a recorder opened in pre would sit open across the tool
+    call for nothing. Opening and closing in post also leaves no key to
+    mismatch between the two hooks, which would leak a recorder.
 
     Order: append the synthesized assistant tool-call message, then the tool
     result, so the next ``pre_api_request``'s input chain reads
@@ -843,8 +843,8 @@ def on_session_end(*, session_id: str = "", **_: Any) -> None:
             )
 
     # LEGACY: same safety for the deferred path, where post_llm_call only fires
-    # on a successful turn (agent/turn_finalizer.py:593 ``if final_response and
-    # not interrupted``).
+    # on a successful turn (agent/turn_finalizer.py:481 in hermes 0.19.0,
+    # ``if final_response and not interrupted``).
     if session_id:
         _close_pending_for_session(session_id, None)
         _state.session_model_clear(session_id)
