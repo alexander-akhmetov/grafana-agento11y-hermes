@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.10.0](https://github.com/alexander-akhmetov/grafana-agento11y-hermes/compare/0.9.0...0.10.0) - 2026-08-16
+
+- Wrap every hook handler in a fail-open guard
+
 ## [0.9.0](https://github.com/alexander-akhmetov/grafana-agento11y-hermes/compare/0.8.0...0.9.0) - 2026-08-16
 
 - Update the end-to-end tests for the new capture and fix false passes
