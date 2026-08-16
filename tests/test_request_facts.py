@@ -132,6 +132,13 @@ def test_the_unsanitized_kwargs_still_read_through_a_collapsed_envelope() -> Non
         # Zero is a setting, not an absence.
         ({"temperature": 0.0}, (None, 0.0, None)),
         ({"inferenceConfig": {"temperature": 0.0}}, (None, 0.0, None)),
+        # A cap is the exception: zero would cap the response at nothing, and
+        # hermes's own reader skips it rather than reporting it.
+        ({"max_tokens": 0}, (None, None, None)),
+        ({"max_tokens": -1}, (None, None, None)),
+        # An unusable cap falls through to the next name, as it does in hermes.
+        ({"max_tokens": 0, "max_completion_tokens": 8192}, (8192, None, None)),
+        ({"max_tokens": "warm", "max_output_tokens": 4096}, (4096, None, None)),
         ({}, (None, None, None)),
         ({"max_tokens": None, "temperature": "warm", "top_p": []}, (None, None, None)),
     ],

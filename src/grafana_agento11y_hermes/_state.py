@@ -117,11 +117,17 @@ _SESSION_MODEL: dict[str, tuple[str, str]] = {}
 # can name tools the current request did not send. A stale inventory is still
 # worth more than an empty one, and an entry never leaves its own session.
 #
+# The model the sampling params were read from is stored beside the entry,
+# because they are the one part of a capture that another model does not share:
+# a mid-session fallback resolves its own cap and temperature from its own
+# profile. The system prompt and the toolset belong to the agent rather than to
+# the model, so those carry across such a switch.
+#
 # Nothing clears an entry: ``on_session_end`` fires per turn, not per session,
 # so clearing there would empty the cache exactly when the second turn needs
 # it. The bound below is what keeps a long-lived process from growing, and
 # hermes issues a new session id on ``/reset``, so a stale entry is never read.
-_SESSION_REQUEST_FACTS: OrderedDict[str, RequestFacts] = OrderedDict()
+_SESSION_REQUEST_FACTS: OrderedDict[str, tuple[str, RequestFacts]] = OrderedDict()
 # Sessions kept, least-recently-used evicted first. An entry holds a full
 # system prompt plus every tool schema, so this is the largest map here.
 _SESSION_FACTS_MAX = 32
@@ -288,22 +294,24 @@ def session_model_clear(session_id: str) -> None:
         _SESSION_MODEL.pop(session_id, None)
 
 
-def session_facts_put(session_id: str, facts: RequestFacts) -> None:
+def session_facts_put(session_id: str, model: str, facts: RequestFacts) -> None:
+    """Keep this capture for the session, under the model its params belong to."""
     if not session_id:
         return
     with _LOCK:
-        _SESSION_REQUEST_FACTS[session_id] = facts
+        _SESSION_REQUEST_FACTS[session_id] = (model, facts)
         _SESSION_REQUEST_FACTS.move_to_end(session_id)
         while len(_SESSION_REQUEST_FACTS) > _SESSION_FACTS_MAX:
             _SESSION_REQUEST_FACTS.popitem(last=False)
 
 
-def session_facts_get(session_id: str) -> RequestFacts | None:
+def session_facts_get(session_id: str) -> tuple[str, RequestFacts] | None:
+    """The session's best capture, and the model its sampling params came from."""
     with _LOCK:
-        facts = _SESSION_REQUEST_FACTS.get(session_id or "")
-        if facts is not None:
+        entry = _SESSION_REQUEST_FACTS.get(session_id or "")
+        if entry is not None:
             _SESSION_REQUEST_FACTS.move_to_end(session_id)
-        return facts
+        return entry
 
 
 def reset_for_tests() -> None:

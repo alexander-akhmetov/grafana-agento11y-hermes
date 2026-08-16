@@ -106,13 +106,11 @@ def parse(
 
     try:
         facts.system_prompt, facts.system_prompt_clipped = _system_prompt(body, system_prompt, request_messages)
-        facts.max_tokens = as_optional_int(
-            _first_present(
-                (body, "max_tokens"),
-                (body, "max_completion_tokens"),
-                (body, "max_output_tokens"),
-                (inference, "maxTokens"),
-            )
+        facts.max_tokens = _output_cap(
+            (body, "max_tokens"),
+            (body, "max_completion_tokens"),
+            (body, "max_output_tokens"),
+            (inference, "maxTokens"),
         )
         facts.temperature = as_optional_float(_first_present((body, "temperature"), (inference, "temperature")))
         facts.top_p = as_optional_float(_first_present((body, "top_p"), (inference, "topP")))
@@ -184,6 +182,24 @@ def _first_present(*sources: tuple[dict, str]) -> Any:
         value = mapping.get(key)
         if value is not None:
             return value
+    return None
+
+
+def _output_cap(*sources: tuple[dict, str]) -> int | None:
+    """First ``(mapping, key)`` pair holding a usable output limit.
+
+    Walking on past a value that is unreadable or at or below zero, rather than
+    stopping at the first key present, is what hermes's own reader
+    ``_requested_output_cap_from_api_kwargs`` (``run_agent.py``) does. A zero
+    cap is not a setting the way a zero temperature is: it would cap the
+    response at nothing, and hermes never puts it on the wire. That reader
+    tries the same three names in the opposite order, which decides nothing
+    here, because each transport writes exactly one cap key.
+    """
+    for mapping, key in sources:
+        cap = as_optional_int(mapping.get(key))
+        if cap is not None and cap > 0:
+            return cap
     return None
 
 

@@ -455,6 +455,62 @@ def test_a_clipped_request_reuses_the_session_capture(patch_client: Any, env_cre
     assert start.max_tokens == 8192
 
 
+def test_a_model_switch_drops_the_carried_sampling_params(patch_client: Any, env_creds: None) -> None:
+    """A cap and a temperature come from the model's own profile.
+
+    The prompt and the toolset are the agent's, so a fallback to another
+    provider keeps those and resolves its own sampling params.
+    """
+    _pre()
+    _pre(api_request_id="req-2", model="claude-opus-4-1", request=CLIPPED_REQUEST)
+
+    start = patch_client.start_generation_calls[1]
+    assert start.max_tokens is None
+    assert start.temperature is None
+    assert start.system_prompt == "be helpful"
+    assert [tool.name for tool in start.tools] == ["read_file", "shell"]
+
+
+def test_a_one_turn_fallback_keeps_the_params_of_the_model_it_left(patch_client: Any, env_creds: None) -> None:
+    """Hermes restores the primary runtime at the top of every turn.
+
+    So the model a failure moved the session to holds it for one turn, and the
+    request that comes back to the first model is deep enough in the session to
+    arrive clipped. Retiring the params on the way out would empty every
+    generation after that.
+    """
+    _pre()
+    _pre(api_request_id="req-2", model="claude-opus-4-1", request=CLIPPED_REQUEST)
+    _pre(api_request_id="req-3", request=CLIPPED_REQUEST)
+
+    start = patch_client.start_generation_calls[2]
+    assert start.max_tokens == 8192
+    assert start.temperature == 0.7
+
+
+def test_a_real_model_switch_takes_the_capture_over(patch_client: Any, env_creds: None) -> None:
+    """A real model switch, as against a one-turn fallback, has to land."""
+    _pre()
+    _pre(
+        api_request_id="req-2",
+        model="claude-opus-4-1",
+        request={"method": "POST", "body": {"max_tokens": 32000}},
+    )
+    _pre(api_request_id="req-3", model="claude-opus-4-1", request=CLIPPED_REQUEST)
+
+    assert patch_client.start_generation_calls[2].max_tokens == 32000
+
+
+def test_a_body_of_only_sampling_params_still_carries_forward(patch_client: Any, env_creds: None) -> None:
+    """A body carrying neither a prompt nor tools is still worth capturing."""
+    _pre(request={"method": "POST", "body": {"max_tokens": 64000, "temperature": 1}}, tool_count=0)
+    _pre(api_request_id="req-2", request=CLIPPED_REQUEST, tool_count=0)
+
+    start = patch_client.start_generation_calls[1]
+    assert start.max_tokens == 64000
+    assert start.temperature == 1.0
+
+
 def test_a_capture_never_crosses_into_another_session(patch_client: Any, env_creds: None) -> None:
     _pre()
     _hooks.on_session_end(session_id="sess-1")

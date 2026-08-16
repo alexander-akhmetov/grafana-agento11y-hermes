@@ -13,6 +13,7 @@ import logging
 import os
 import random
 import secrets
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -37,6 +38,9 @@ _LOGGED_TRUNCATED_REQUEST = False
 # turn-scoped convo bookkeeping on that path, so its writers stop once we know
 # which hermes we are on.
 _SAW_REQUEST_ID = False
+
+# The fields of a capture that belong to the model rather than to the agent.
+_SAMPLING_FIELDS = ("max_tokens", "temperature", "top_p", "tool_choice")
 
 
 def _warn_legacy_hermes_once() -> None:
@@ -423,6 +427,7 @@ def _prefer_cached(current: Any, current_clipped: bool, cached: Any, cached_clip
 
 def _request_facts(
     session_id: str,
+    model: str,
     request: Any,
     request_messages: Any,
     system_prompt: Any,
@@ -433,6 +438,13 @@ def _request_facts(
     Merging field by field rather than wholesale keeps a partial read winning
     where it has data. What comes out is never worse than what was cached, so
     storing it back cannot degrade the capture the next request borrows from.
+
+    The sampling params only come from a capture made on the same model. They
+    are resolved per model profile, so a session that fell back to another
+    provider would otherwise report the first model's cap and temperature on
+    the second model's generations. A request that read none of its own leaves
+    the cached model in place instead of taking it over, because a hermes
+    fallback lasts one turn and the params it displaced would not come back.
 
     Returns the facts and whether any field came from the cache.
     """
@@ -445,8 +457,10 @@ def _request_facts(
         facts.tools_clipped = True
 
     reused = False
-    cached = _state.session_facts_get(session_id)
-    if cached is not None:
+    stored_model, stored_facts = model, facts
+    entry = _state.session_facts_get(session_id)
+    if entry is not None:
+        cached_model, cached = entry
         if _prefer_cached(
             facts.system_prompt,
             facts.system_prompt_clipped,
@@ -462,13 +476,24 @@ def _request_facts(
             facts.tools = list(cached.tools)
             facts.tools_clipped = cached.tools_clipped
             reused = True
-        for name in ("max_tokens", "temperature", "top_p", "tool_choice"):
-            if getattr(facts, name) is None and getattr(cached, name) is not None:
-                setattr(facts, name, getattr(cached, name))
-                reused = True
+        if cached_model == model:
+            for name in _SAMPLING_FIELDS:
+                if getattr(facts, name) is None and getattr(cached, name) is not None:
+                    setattr(facts, name, getattr(cached, name))
+                    reused = True
+        elif all(getattr(facts, name) is None for name in _SAMPLING_FIELDS):
+            # Another model, and nothing read about it, so keep the pair the
+            # cache already holds. A hermes fallback lasts one turn
+            # (``restore_primary_runtime`` in ``agent/agent_runtime_helpers``),
+            # and the request that comes back to the first model is clipped by
+            # then, so retiring its params here loses them for good.
+            stored_model = cached_model
+            stored_facts = replace(facts, **{name: getattr(cached, name) for name in _SAMPLING_FIELDS})
 
-    if facts.system_prompt or facts.tools:
-        _state.session_facts_put(session_id, facts)
+    # Stored on every request. The merge above leaves the prompt and the toolset
+    # no worse than the cache already held, and a request that resolved only
+    # sampling params is exactly the one a later clipped request needs.
+    _state.session_facts_put(session_id, stored_model, stored_facts)
     return facts, reused
 
 
@@ -502,7 +527,7 @@ def on_pre_api_request(
         # readable are the earliest of a session, so skipping those would leave
         # every sampled-in request with an empty capture behind it. Parsing
         # costs well under a millisecond and touches nothing but the cache.
-        facts, facts_reused = _request_facts(session_id, request, request_messages, system_prompt, tool_count)
+        facts, facts_reused = _request_facts(session_id, model, request, request_messages, system_prompt, tool_count)
         if not _should_sample():
             return
 
