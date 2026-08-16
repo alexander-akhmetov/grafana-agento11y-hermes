@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 
 import pytest
 
@@ -24,6 +25,10 @@ def _clear_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "OTEL_EXPORTER_OTLP_HEADERS",
         "AGENTO11Y_OTEL_EXPORTER_OTLP_ENDPOINT",
         "AGENTO11Y_HERMES_ERROR_FLUSH_TIMEOUT",
+        "AGENTO11Y_HERMES_SAMPLE_RATE",
+        "AGENTO11Y_HERMES_MAX_CHARS",
+        "AGENTO11Y_HERMES_OTEL_AUTO",
+        "AGENTO11Y_HEADERS",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -122,3 +127,104 @@ def test_error_flush_timeout_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_error_flush_timeout_zero_disables(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENTO11Y_HERMES_ERROR_FLUSH_TIMEOUT", "0")
     assert _config.load().error_flush_timeout == 0.0
+
+
+# --- env parsing ---
+#
+# An unreadable value has to fall back to the default and say so, rather than
+# raising out of load() and taking the whole plugin down at import time.
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    (("0.5", 0.5), ("1", 1.0), (" 0.25 ", 0.25), ("", 1.0), ("   ", 1.0), ("half", 1.0), ("1,5", 1.0)),
+)
+def test_a_float_env_falls_back_to_its_default(monkeypatch: pytest.MonkeyPatch, raw: str, expected: float) -> None:
+    monkeypatch.setenv("AGENTO11Y_HERMES_SAMPLE_RATE", raw)
+    assert _config.load().sample_rate == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    (("500", 500), (" 500 ", 500), ("", 12000), ("lots", 12000), ("1.5", 12000)),
+)
+def test_an_int_env_falls_back_to_its_default(monkeypatch: pytest.MonkeyPatch, raw: str, expected: int) -> None:
+    monkeypatch.setenv("AGENTO11Y_HERMES_MAX_CHARS", raw)
+    assert _config.load().max_chars == expected
+
+
+def test_an_unreadable_env_value_is_logged(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setenv("AGENTO11Y_HERMES_MAX_CHARS", "lots")
+    with caplog.at_level(logging.WARNING):
+        _config.load()
+    assert [r for r in caplog.records if "AGENTO11Y_HERMES_MAX_CHARS" in r.getMessage()]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    (
+        ("1", True),
+        ("true", True),
+        ("TRUE", True),
+        ("yes", True),
+        ("on", True),
+        ("0", False),
+        ("false", False),
+        ("no", False),
+        ("anything else", False),
+        # Unset and blank both keep the default, which is True here.
+        ("", True),
+        ("  ", True),
+    ),
+)
+def test_a_bool_env_reads_the_usual_spellings(monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool) -> None:
+    monkeypatch.setenv("AGENTO11Y_HERMES_OTEL_AUTO", raw)
+    assert _config.load().otel_auto is expected
+
+
+# --- generations channel presence ---
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    (
+        ({}, False),
+        ({"AGENTO11Y_AUTH_TOKEN": "glc_secret"}, True),
+        ({"AGENTO11Y_AUTH_TOKEN": "  "}, False),
+        ({"AGENTO11Y_AUTH_MODE": "basic"}, True),
+        ({"AGENTO11Y_AUTH_MODE": "bearer"}, True),
+        # An explicit "none" is a way to turn the channel off, not on.
+        ({"AGENTO11Y_AUTH_MODE": "none"}, False),
+        ({"AGENTO11Y_AUTH_MODE": "NONE"}, False),
+    ),
+)
+def test_the_generations_channel_is_configured_by_token_or_mode(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], expected: bool
+) -> None:
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert _config.load().generations_configured is expected
+
+
+# --- header parsing ---
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    (
+        ("", {}),
+        ("X-Foo=bar", {"X-Foo": "bar"}),
+        ("X-Foo=bar,X-Baz=qux", {"X-Foo": "bar", "X-Baz": "qux"}),
+        (" X-Foo = bar , X-Baz=qux ", {"X-Foo": "bar", "X-Baz": "qux"}),
+        # A value holding an "=" keeps it: only the first one splits.
+        ("Authorization=Basic dGVzdA==", {"Authorization": "Basic dGVzdA=="}),
+        # Entries with no "=" and entries with an empty key are dropped.
+        ("novalue,X-Foo=bar", {"X-Foo": "bar"}),
+        ("=orphan,X-Foo=bar", {"X-Foo": "bar"}),
+        (",,", {}),
+        ("X-Empty=", {"X-Empty": ""}),
+    ),
+)
+def test_export_headers_parse_like_the_sdk(monkeypatch: pytest.MonkeyPatch, raw: str, expected: dict[str, str]) -> None:
+    monkeypatch.setenv("AGENTO11Y_HEADERS", raw)
+    assert _config.load().export_headers == expected

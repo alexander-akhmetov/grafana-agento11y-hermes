@@ -17,6 +17,7 @@ permissions:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       # hatch-vcs derives the version from git tags. A shallow clone has none,
       # and produces a wrong dev version instead of failing.
@@ -44,6 +45,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -62,7 +64,7 @@ jobs:
         run: make sync
 
       - name: Test
-        run: make test
+        run: make coverage
 
       - name: Import sanity check
         run: uv run python -c "import grafana_agento11y_hermes as p; assert callable(p.register)"

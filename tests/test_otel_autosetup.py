@@ -298,3 +298,37 @@ def test_install_reports_derived_auth_only_when_headers_are_used(otel_env, monke
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_HEADERS", raising=False)
     _, derived = _otel._install_tracer_provider(cfg)
     assert derived is True
+
+
+def test_a_provider_that_cannot_be_built_disables_the_channel(
+    otel_env, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An unbuildable exporter is a no-op channel, never a raise into hermes."""
+    import logging
+
+    def explode(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("exporter refused to build")
+
+    monkeypatch.setattr(_otel, "_install_tracer_provider", explode)
+
+    with caplog.at_level(logging.WARNING):
+        assert _otel.setup_if_needed(_make_cfg()) is False
+
+    assert [r for r in caplog.records if "failed to set up OTel providers" in r.getMessage()]
+    assert _otel._INSTALLED_TRACER_PROVIDER is None
+    assert _proxy_tracer_active(), "a failed install must not leave a half-wired provider"
+
+
+def test_a_failed_setup_is_not_retried(otel_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts: list[int] = []
+
+    def explode(*_: Any, **__: Any) -> Any:
+        attempts.append(1)
+        raise RuntimeError("exporter refused to build")
+
+    monkeypatch.setattr(_otel, "_install_tracer_provider", explode)
+
+    _otel.setup_if_needed(_make_cfg())
+    _otel.setup_if_needed(_make_cfg())
+
+    assert len(attempts) == 1, "setup is idempotent, including after a failure"

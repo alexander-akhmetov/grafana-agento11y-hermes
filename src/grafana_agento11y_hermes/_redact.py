@@ -43,6 +43,9 @@ def maybe_parse_json_string(value: str, max_chars: int) -> Any:
         parsed, idx = json.JSONDecoder().raw_decode(stripped)
     except Exception:
         return value
+    # Unreachable while the prefix check above holds: a value starting with
+    # "{" or "[" decodes to a dict or a list or not at all. Kept so relaxing
+    # that check cannot silently start returning scalars from here.
     if not isinstance(parsed, (dict, list)):
         return value
 

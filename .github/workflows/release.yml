@@ -16,6 +16,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write # create the release and upload the artifacts
       id-token: write # OIDC token for the provenance attestation
@@ -105,6 +106,7 @@ jobs:
   publish-pypi:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: pypi
       url: https://pypi.org/p/grafana-agento11y-hermes
@@ -125,6 +127,7 @@ jobs:
   changelog-pr:
     needs: publish-pypi
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write # push the branch
       pull-requests: write # open the PR

@@ -1,18 +1,20 @@
 """Hermes plugin hook handlers.
 
-All handlers fail open: any exception is caught, logged at most once per kind,
-and the hermes loop is allowed to continue. If the SDK client cannot be
+All handlers fail open: ``_fail_open`` wraps every one of them, so an exception
+is logged and the hermes loop continues. If the SDK client cannot be
 constructed (missing creds, SDK error), every handler short-circuits via
 ``client is None``.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
 import random
 import secrets
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -41,6 +43,33 @@ _SAW_REQUEST_ID = False
 
 # The fields of a capture that belong to the model rather than to the agent.
 _SAMPLING_FIELDS = ("max_tokens", "temperature", "top_p", "tool_choice")
+
+
+def _fail_open(handler: Callable[..., None]) -> Callable[..., None]:
+    """Stop anything a hook handler raises from reaching the hermes loop.
+
+    The fail-open invariant applied in one place instead of per function, so a
+    handler that grows a new unguarded call cannot take the agent loop down
+    with it. Every handler ``__init__`` registers carries this.
+
+    The narrower ``try`` blocks inside the handlers stay, because they are the
+    ones that keep going afterwards: losing the tool result is not a reason to
+    also skip closing the recorder. This one only decides what happens when
+    nothing else caught it.
+    """
+
+    # Read through getattr because the annotation is Callable, which covers
+    # callables that carry no __name__.
+    name = getattr(handler, "__name__", "hook")
+
+    @functools.wraps(handler)
+    def wrapper(*args: Any, **kwargs: Any) -> None:
+        try:
+            handler(*args, **kwargs)
+        except Exception as exc:
+            logger.warning("grafana-agento11y-hermes: %s failed: %s", name, exc)
+
+    return wrapper
 
 
 def _warn_legacy_hermes_once() -> None:
@@ -343,6 +372,7 @@ def _build_token_usage(usage: Any):
     )
 
 
+@_fail_open
 def on_pre_llm_call(
     *,
     task_id: str = "",
@@ -381,6 +411,7 @@ def on_pre_llm_call(
     _state.turn_start_asst_count_set(key, start_asst_count)
 
 
+@_fail_open
 def on_post_llm_call(
     *,
     task_id: str = "",
@@ -497,6 +528,7 @@ def _request_facts(
     return facts, reused
 
 
+@_fail_open
 def on_pre_api_request(
     *,
     task_id: str = "",
@@ -522,135 +554,138 @@ def on_pre_api_request(
     if client is None:
         return
 
-    try:
-        # Read the request before the sampling gate. The payloads that arrive
-        # readable are the earliest of a session, so skipping those would leave
-        # every sampled-in request with an empty capture behind it. Parsing
-        # costs well under a millisecond and touches nothing but the cache.
-        facts, facts_reused = _request_facts(session_id, model, request, request_messages, system_prompt, tool_count)
-        if not _should_sample():
-            return
+    # Coerced once, because the count is both compared against a length and
+    # recorded. A provider that reports it as text would otherwise abort the
+    # open and cost the whole generation, not just the count.
+    tools_expected = as_int(tool_count)
+    # Read the request before the sampling gate. The payloads that arrive
+    # readable are the earliest of a session, so skipping those would leave
+    # every sampled-in request with an empty capture behind it. Parsing costs
+    # well under a millisecond and touches nothing but the cache.
+    facts, facts_reused = _request_facts(session_id, model, request, request_messages, system_prompt, tools_expected)
+    if not _should_sample():
+        return
 
-        from agento11y import GenerationStart, ModelRef
+    from agento11y import GenerationStart, ModelRef
 
-        # hermes v2026.6.5+ passes the input messages here as
-        # ``conversation_history`` (agent/conversation_loop.py). ``messages`` is
-        # accepted only because older builds and our own tests used that name.
-        if not isinstance(conversation_history, list):
-            conversation_history = messages
-        if not isinstance(conversation_history, list):
-            # LEGACY: no messages on the hook, so use the running history that
-            # pre_llm_call captured and post_tool_call extends.
-            _warn_legacy_hermes_once()
-            conversation_history = _state.convo_get(_convo_key(task_id, session_id))
-        # ``conversation_history`` carries no system message on any supported
-        # hermes: it is the agent's running convo, and the system prompt is
-        # prepended to the separate list that goes on the wire. The split is
-        # kept for ``non_system``, which is the input, and as the last resort
-        # for the prompt itself.
-        history_system_prompt, non_system = _split_system_prompt(conversation_history)
-        sdk_messages = _to_sdk_messages(non_system)
+    # hermes v2026.6.5+ passes the input messages here as
+    # ``conversation_history`` (agent/conversation_loop.py). ``messages`` is
+    # accepted only because older builds and our own tests used that name.
+    if not isinstance(conversation_history, list):
+        conversation_history = messages
+    if not isinstance(conversation_history, list):
+        # LEGACY: no messages on the hook, so use the running history that
+        # pre_llm_call captured and post_tool_call extends.
+        _warn_legacy_hermes_once()
+        conversation_history = _state.convo_get(_convo_key(task_id, session_id))
+    # ``conversation_history`` carries no system message on any supported
+    # hermes: it is the agent's running convo, and the system prompt is
+    # prepended to the separate list that goes on the wire. The split is
+    # kept for ``non_system``, which is the input, and as the last resort
+    # for the prompt itself.
+    history_system_prompt, non_system = _split_system_prompt(conversation_history)
+    sdk_messages = _to_sdk_messages(non_system)
 
-        resolved_system_prompt = facts.system_prompt or history_system_prompt
-        # The body is what hermes actually put on the wire; the ``max_tokens``
-        # kwarg beside it arrives as None on every supported release.
-        resolved_max_tokens = facts.max_tokens
-        if resolved_max_tokens is None:
-            resolved_max_tokens = as_optional_int(max_tokens)
+    resolved_system_prompt = facts.system_prompt or history_system_prompt
+    # The body is what hermes actually put on the wire; the ``max_tokens``
+    # kwarg beside it arrives as None on every supported release.
+    resolved_max_tokens = facts.max_tokens
+    if resolved_max_tokens is None:
+        resolved_max_tokens = as_optional_int(max_tokens)
 
-        # Stamp started_at on both seed and GenState. The seed timestamp is
-        # what the SDK uses for the span's start_time; GenState carries it so
-        # the close path can compute completed_at = started_at + api_duration.
-        started_at = datetime.now(UTC)
-        # Assign the id here rather than letting the SDK mint one inside end():
-        # the tool executions this call asks for run while it is still unknown
-        # otherwise. Same shape as the SDK's own framework handler.
-        generation_id = f"gen_{secrets.token_hex(8)}"
-        parent_generation_id = _state.turn_last_gen_get(turn_id)
-        start = GenerationStart(
-            id=generation_id,
-            parent_generation_ids=[parent_generation_id] if parent_generation_id else [],
-            model=ModelRef(provider=provider or "unknown", name=model or "unknown"),
-            conversation_id=session_id or task_id or "",
-            agent_name=_agent_name(),
-            effective_version=_effective_version(),
-            system_prompt=resolved_system_prompt,
-            started_at=started_at,
-            max_tokens=resolved_max_tokens,
-            temperature=facts.temperature,
-            top_p=facts.top_p,
-            tool_choice=facts.tool_choice,
-            tools=facts.tools,
-            # The framework tags and the rest of the built-ins ride on the
-            # ClientConfig instead, which is the only channel that also reaches
-            # spans and metrics. The SDK merges them in under these.
-            tags=_tags.seed_tags(),
-            metadata={
-                "hermes.api_call_count": api_call_count,
-                "hermes.task_id": task_id,
-                "hermes.session_id": session_id,
-                "hermes.turn_id": turn_id,
-                # Raw and always accurate, unlike the schemas, so an empty
-                # ``tools`` next to a non-zero count reads as a clipped payload
-                # rather than a hermes with no tools.
-                "hermes.tool_count": tool_count,
-                # True when hermes clipped this request's payload and at least
-                # one field above came from an earlier request in the session.
-                # A swapped toolset makes such a field stale, so the record
-                # says which ones to trust.
-                "hermes.request_facts_reused": facts_reused,
-            },
+    # Stamp started_at on both seed and GenState. The seed timestamp is
+    # what the SDK uses for the span's start_time; GenState carries it so
+    # the close path can compute completed_at = started_at + api_duration.
+    started_at = datetime.now(UTC)
+    # Assign the id here rather than letting the SDK mint one inside end():
+    # the tool executions this call asks for run while it is still unknown
+    # otherwise. Same shape as the SDK's own framework handler.
+    generation_id = f"gen_{secrets.token_hex(8)}"
+    parent_generation_id = _state.turn_last_gen_get(turn_id)
+    start = GenerationStart(
+        id=generation_id,
+        parent_generation_ids=[parent_generation_id] if parent_generation_id else [],
+        model=ModelRef(provider=provider or "unknown", name=model or "unknown"),
+        conversation_id=session_id or task_id or "",
+        agent_name=_agent_name(),
+        effective_version=_effective_version(),
+        system_prompt=resolved_system_prompt,
+        started_at=started_at,
+        max_tokens=resolved_max_tokens,
+        temperature=facts.temperature,
+        top_p=facts.top_p,
+        tool_choice=facts.tool_choice,
+        tools=facts.tools,
+        # The framework tags and the rest of the built-ins ride on the
+        # ClientConfig instead, which is the only channel that also reaches
+        # spans and metrics. The SDK merges them in under these.
+        tags=_tags.seed_tags(),
+        metadata={
+            "hermes.api_call_count": as_int(api_call_count),
+            "hermes.task_id": task_id,
+            "hermes.session_id": session_id,
+            "hermes.turn_id": turn_id,
+            # Counted by hermes rather than read out of the payload, so it
+            # stays accurate when the schemas do not: an empty ``tools`` next
+            # to a non-zero count reads as a clipped payload rather than a
+            # hermes with no tools.
+            "hermes.tool_count": tools_expected,
+            # True when hermes clipped this request's payload and at least
+            # one field above came from an earlier request in the session.
+            # A swapped toolset makes such a field stale, so the record
+            # says which ones to trust.
+            "hermes.request_facts_reused": facts_reused,
+        },
+    )
+    recorder = client.start_generation(start)
+    recorder.__enter__()
+    # Input is stashed on GenState and threaded into set_result at
+    # close-time, so set_result is only called once.
+    state = _state.GenState(
+        recorder=recorder,
+        input_messages=sdk_messages,
+        system_prompt=resolved_system_prompt,
+        session_id=session_id,
+        generation_id=generation_id,
+        turn_id=turn_id,
+        started_at=started_at,
+    )
+    # post_tool_call carries neither model nor provider, so remember them
+    # for the tool executions that follow this request.
+    _state.session_model_put(session_id, model or "", provider or "")
+    if api_request_id:
+        # Keyed on the request id, which post_tool_call also carries. A
+        # retry overwrites the link, so the tools of a request always point
+        # at the attempt that was live when they ran.
+        _state.gen_link_put(
+            api_request_id,
+            _state.GenLink(
+                generation_id=generation_id,
+                span_context=_span_context_of(recorder),
+                session_id=session_id,
+                turn_id=turn_id,
+            ),
         )
-        recorder = client.start_generation(start)
-        recorder.__enter__()
-        # Input is stashed on GenState and threaded into set_result at
-        # close-time, so set_result is only called once.
-        state = _state.GenState(
-            recorder=recorder,
-            input_messages=sdk_messages,
-            system_prompt=resolved_system_prompt,
-            session_id=session_id,
-            generation_id=generation_id,
-            turn_id=turn_id,
-            started_at=started_at,
-        )
-        # post_tool_call carries neither model nor provider, so remember them
-        # for the tool executions that follow this request.
-        _state.session_model_put(session_id, model or "", provider or "")
-        if api_request_id:
-            # Keyed on the request id, which post_tool_call also carries. A
-            # retry overwrites the link, so the tools of a request always point
-            # at the attempt that was live when they ran.
-            _state.gen_link_put(
-                api_request_id,
-                _state.GenLink(
-                    generation_id=generation_id,
-                    span_context=_span_context_of(recorder),
-                    session_id=session_id,
-                    turn_id=turn_id,
-                ),
+        displaced = _state.req_put(api_request_id, state)
+        if displaced is not None:
+            # A retry reused the id, so the earlier attempt was abandoned
+            # mid-flight. Close it as its own failed generation.
+            _finish_generation(
+                displaced,
+                assistant_message=None,
+                usage=None,
+                finish_reason="",
+                response_model="",
+                api_duration=None,
+                call_error=_errors.SupersededAttempt(),
             )
-            displaced = _state.req_put(api_request_id, state)
-            if displaced is not None:
-                # A retry reused the id, so the earlier attempt was abandoned
-                # mid-flight. Close it as its own failed generation.
-                _finish_generation(
-                    displaced,
-                    assistant_message=None,
-                    usage=None,
-                    finish_reason="",
-                    response_model="",
-                    api_duration=None,
-                    call_error=_errors.SupersededAttempt(),
-                )
-        else:
-            # LEGACY: infer the pair from the call counter.
-            _warn_legacy_hermes_once()
-            _state.gen_put((task_id, session_id, int(api_call_count or 0)), state)
-    except Exception as exc:
-        logger.warning("grafana-agento11y-hermes: on_pre_api_request failed: %s", exc)
+    else:
+        # LEGACY: infer the pair from the call counter.
+        _warn_legacy_hermes_once()
+        _state.gen_put((task_id, session_id, as_int(api_call_count)), state)
 
 
+@_fail_open
 def on_api_request_error(
     *,
     api_request_id: str = "",
@@ -671,31 +706,29 @@ def on_api_request_error(
     """
     if not api_request_id:
         return
-    try:
-        # Read the payload before popping. ``error`` is whatever hermes built,
-        # so if reading it raises, the state is still in the map for
-        # displacement or on_session_end to close rather than orphaned here.
-        error_type, message, payload_status = _error_fields(error)
-        state = _state.req_pop(api_request_id)
-        if state is None:
-            return
-        _finish_generation(
-            state,
-            assistant_message=None,
-            usage=None,
-            finish_reason="",
-            response_model="",
-            api_duration=None,
-            call_error=_errors.ProviderCallError(error_type, as_optional_int(status_code) or payload_status),
-            call_error_message=_redact.truncate_text(message, _ERROR_MAX_CHARS),
-        )
-        cfg = _client._get_plugin_config()
-        if cfg is not None:
-            _client.flush_bounded(cfg.error_flush_timeout)
-    except Exception as exc:
-        logger.warning("grafana-agento11y-hermes: on_api_request_error failed: %s", exc)
+    # Read the payload before popping. ``error`` is whatever hermes built,
+    # so if reading it raises, the state is still in the map for
+    # displacement or on_session_end to close rather than orphaned here.
+    error_type, message, payload_status = _error_fields(error)
+    state = _state.req_pop(api_request_id)
+    if state is None:
+        return
+    _finish_generation(
+        state,
+        assistant_message=None,
+        usage=None,
+        finish_reason="",
+        response_model="",
+        api_duration=None,
+        call_error=_errors.ProviderCallError(error_type, as_optional_int(status_code) or payload_status),
+        call_error_message=_redact.truncate_text(message, _ERROR_MAX_CHARS),
+    )
+    cfg = _client._get_plugin_config()
+    if cfg is not None:
+        _client.flush_bounded(cfg.error_flush_timeout)
 
 
+@_fail_open
 def on_post_api_request(
     *,
     task_id: str = "",
@@ -741,7 +774,10 @@ def on_post_api_request(
         _state.turn_last_gen_put(state.turn_id, state.generation_id, state.session_id)
         return
 
-    state = _state.gen_get((task_id, session_id, int(api_call_count or 0)))
+    # as_int, not int(): the two hooks have to agree on the key even when a
+    # provider reports the counter as text, and this one runs outside any
+    # narrower guard.
+    state = _state.gen_get((task_id, session_id, as_int(api_call_count)))
     if state is None:
         return
     state.usage = usage
@@ -905,6 +941,7 @@ def _stamp_parent_generation(recorder: Any, link: Any) -> None:
         logger.debug("grafana-agento11y-hermes: parent generation attribute failed: %s", exc)
 
 
+@_fail_open
 def on_post_tool_call(
     *,
     tool_name: str = "",
@@ -978,69 +1015,67 @@ def on_post_tool_call(
     if not _should_sample():
         return
 
+    from agento11y import ToolExecutionStart
+
+    completed_at = datetime.now(UTC)
+    if isinstance(duration_ms, (int, float)) and duration_ms >= 0:
+        started_at = completed_at - timedelta(milliseconds=float(duration_ms))
+    else:
+        started_at = completed_at
+
+    # Leave include_content at its default. The SDK resolves tool-content
+    # capture from the mode: forced on under full, forced off under
+    # metadata_only / full_with_metadata_spans, and the seed is honored
+    # under no_tool_content. Pinning it True kept args/results in the span
+    # even when the user set no_tool_content.
+    request_model, request_provider = _state.session_model_get(session_id)
+    start = ToolExecutionStart(
+        tool_name=tool_name or "",
+        tool_call_id=tool_call_id or "",
+        tool_type="function",
+        conversation_id=session_id or task_id or "",
+        agent_name=_agent_name(),
+        request_model=request_model,
+        request_provider=request_provider,
+        started_at=started_at,
+    )
+    link = _state.gen_link_get(api_request_id)
+    recorder = _start_tool_execution_under(client, start, link)
+    recorder.__enter__()
+    cfg = _client._get_plugin_config()
+    # cfg is non-None here: _get_client() above only returns a client after
+    # _CONFIG was populated by `_client._get_client()`.
+    max_chars = cfg.max_chars if cfg is not None else 12000
     try:
-        from agento11y import ToolExecutionStart
-
-        completed_at = datetime.now(UTC)
-        if isinstance(duration_ms, (int, float)) and duration_ms >= 0:
-            started_at = completed_at - timedelta(milliseconds=float(duration_ms))
-        else:
-            started_at = completed_at
-
-        # Leave include_content at its default. The SDK resolves tool-content
-        # capture from the mode: forced on under full, forced off under
-        # metadata_only / full_with_metadata_spans, and the seed is honored
-        # under no_tool_content. Pinning it True kept args/results in the span
-        # even when the user set no_tool_content.
-        request_model, request_provider = _state.session_model_get(session_id)
-        start = ToolExecutionStart(
-            tool_name=tool_name or "",
-            tool_call_id=tool_call_id or "",
-            tool_type="function",
-            conversation_id=session_id or task_id or "",
-            agent_name=_agent_name(),
-            request_model=request_model,
-            request_provider=request_provider,
-            started_at=started_at,
-        )
-        link = _state.gen_link_get(api_request_id)
-        recorder = _start_tool_execution_under(client, start, link)
-        recorder.__enter__()
-        cfg = _client._get_plugin_config()
-        # cfg is non-None here: _get_client() above only returns a client after
-        # _CONFIG was populated by `_client._get_client()`.
-        max_chars = cfg.max_chars if cfg is not None else 12000
-        try:
-            _stamp_parent_generation(recorder, link)
-            # Before set_result, matching the first-party plugins. The recorder
-            # has no call-error channel, so set_exec_error is the only way a
-            # failed tool reaches the span and the failure metric.
-            if str(status).lower() == "error":
-                recorder.set_exec_error(
-                    Exception(
-                        _redact.truncate_text(
-                            str(error_message or error_type or "tool returned error"),
-                            _ERROR_MAX_CHARS,
-                        )
+        _stamp_parent_generation(recorder, link)
+        # Before set_result, matching the first-party plugins. The recorder
+        # has no call-error channel, so set_exec_error is the only way a
+        # failed tool reaches the span and the failure metric.
+        if str(status).lower() == "error":
+            recorder.set_exec_error(
+                Exception(
+                    _redact.truncate_text(
+                        str(error_message or error_type or "tool returned error"),
+                        _ERROR_MAX_CHARS,
                     )
                 )
-            try:
-                recorder.set_result(
-                    arguments=_redact.safe_value(args, max_chars=max_chars, parse_json_strings=True),
-                    result=_redact.safe_value(result, max_chars=max_chars, parse_json_strings=True),
-                    completed_at=completed_at,
-                )
-            except Exception as exc:
-                logger.warning("grafana-agento11y-hermes: tool set_result failed: %s", exc)
-        finally:
-            try:
-                recorder.__exit__(None, None, None)
-            except Exception as exc:
-                logger.warning("grafana-agento11y-hermes: tool recorder __exit__ failed: %s", exc)
-    except Exception as exc:
-        logger.warning("grafana-agento11y-hermes: on_post_tool_call failed: %s", exc)
+            )
+        try:
+            recorder.set_result(
+                arguments=_redact.safe_value(args, max_chars=max_chars, parse_json_strings=True),
+                result=_redact.safe_value(result, max_chars=max_chars, parse_json_strings=True),
+                completed_at=completed_at,
+            )
+        except Exception as exc:
+            logger.warning("grafana-agento11y-hermes: tool set_result failed: %s", exc)
+    finally:
+        try:
+            recorder.__exit__(None, None, None)
+        except Exception as exc:
+            logger.warning("grafana-agento11y-hermes: tool recorder __exit__ failed: %s", exc)
 
 
+@_fail_open
 def on_session_end(*, session_id: str = "", **_: Any) -> None:
     # Interrupt safety. A request whose post_api_request never fired (the user
     # interrupted, or the call errored into api_request_error) would leak its
@@ -1090,6 +1125,7 @@ def on_session_end(*, session_id: str = "", **_: Any) -> None:
     _client._flush_channels()
 
 
+@_fail_open
 def on_session_finalize(*, session_id: str = "", **_: Any) -> None:
     """CLI exit. Same work as ``on_session_end``, which does not always fire.
 

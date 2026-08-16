@@ -20,7 +20,7 @@ Each channel is independently optional. If only one is configured, only that one
 ## Layout
 
 - `__init__.py`: `register(ctx)` wires the hook handlers into Hermes's plugin context and applies the legacy env shim first.
-- `_hooks.py`: `pre_api_request` / `post_api_request` (LLM call to generation), `api_request_error` (failed LLM call to a marked generation, then a bounded flush), `post_tool_call` (tool to tool execution), `on_session_end` / `on_session_finalize` (flush). Mints the generation id at pre time, chains the generations of a turn, and starts each tool execution inside the span context of the call that requested it. See "Tags, linking and generation mode". Seeds each generation with the system prompt, tool definitions and sampling params `_request.py` read, falling back per field to this session's capture: an empty field takes the cached one, a clipped field takes a complete cached one, and between two clipped copies the longer one wins, because they are prefixes of the same value. The sampling params are the exception: they only carry forward from a capture read on the same model, because each model resolves its own cap and temperature from its own profile, while the prompt and the toolset belong to the agent and survive a fallback to another provider. A request on another model that read no params of its own leaves the cached model in place rather than taking the entry over, because hermes restores the primary runtime at the top of every turn, so a fallback lasts one turn and the session comes back to a model whose payload is by then clipped. The merged result goes back into the cache, so it can only improve. `hermes.request_facts_reused` on the record says whether any field came from an earlier request. The read runs before the sampling gate: the payloads that arrive complete are the earliest of a session, so gating them would leave every sampled-in request with an empty capture behind it.
+- `_hooks.py`: `pre_api_request` / `post_api_request` (LLM call to generation), `api_request_error` (failed LLM call to a marked generation, then a bounded flush), `post_tool_call` (tool to tool execution), `on_session_end` / `on_session_finalize` (flush). Every handler is wrapped in `@_fail_open`. Mints the generation id at pre time, chains the generations of a turn, and starts each tool execution inside the span context of the call that requested it. See "Tags, linking and generation mode". Seeds each generation with the system prompt, tool definitions and sampling params `_request.py` read, falling back per field to this session's capture: an empty field takes the cached one, a clipped field takes a complete cached one, and between two clipped copies the longer one wins, because they are prefixes of the same value. The sampling params are the exception: they only carry forward from a capture read on the same model, because each model resolves its own cap and temperature from its own profile, while the prompt and the toolset belong to the agent and survive a fallback to another provider. A request on another model that read no params of its own leaves the cached model in place rather than taking the entry over, because hermes restores the primary runtime at the top of every turn, so a fallback lasts one turn and the session comes back to a model whose payload is by then clipped. The merged result goes back into the cache, so it can only improve. `hermes.request_facts_reused` on the record says whether any field came from an earlier request. The read runs before the sampling gate: the payloads that arrive complete are the earliest of a session, so gating them would leave every sampled-in request with an empty capture behind it.
 - `_client.py`: lazy singleton `Client`. Build via the SDK's `ClientConfig` plus `GenerationExportConfig(protocol="http", auth=AuthConfig(mode="basic", ...))` when generation creds are set, `protocol="none"` otherwise. Also carries the identity tags, which reach spans and metrics from here only. Init failure is cached.
 - `_otel.py`: installs `TracerProvider` and `MeterProvider` with OTLP HTTP exporters that read the `OTEL_EXPORTER_OTLP_*` envs themselves. The only kwargs passed are the derived auth headers and, for `AGENTO11Y_OTEL_EXPORTER_OTLP_ENDPOINT`, the per-signal endpoint the exporters cannot resolve. Each provider is checked independently, so the host can own one and let the plugin install the other. Force-flushes only providers we installed.
 - `_config.py`: reads plugin-only knobs under `AGENTO11Y_HERMES_*` and tracks two presence flags, `generations_configured` (from `AGENTO11Y_AUTH_TOKEN` / `AGENTO11Y_AUTH_MODE`) and `otel_configured` (from `OTEL_EXPORTER_OTLP_ENDPOINT` or its `AGENTO11Y_`-prefixed alias, which `otel_endpoint_override` carries to `_otel.py` because only the standard name reaches the exporters). Channel decisions in `_client.py` and `_otel.py` are driven by these flags.
@@ -34,7 +34,8 @@ Each channel is independently optional. If only one is configured, only that one
 
 ## Hard invariants
 
-- Fail open, always. Every hook handler catches `Exception`, logs at most once, and returns. Telemetry must never block, slow, or crash the Hermes loop. If you add a code path that can raise, wrap it.
+- Fail open, always. Telemetry must never block, slow, or crash the Hermes loop. The `@_fail_open` decorator in `_hooks.py` carries this for every registered handler, so a new handler needs the decorator rather than its own whole-body `try`. The narrower guards inside the handlers stay: they are the ones that keep going afterwards, and losing a tool result is not a reason to skip closing the recorder. `tests/test_fail_open.py` drives all three ways a handler gets hit, so a path that can raise is caught by a test rather than by a reviewer.
+- Absorb a bad field where it is read, not at the backstop. A handler that reaches `@_fail_open` abandoned everything after the bad field, which usually leaks a recorder. That is why the counters go through `_coerce.as_int` rather than `int()`, and why the malformed-payload table asserts the backstop did *not* fire.
 - `on_session_end` flushes and does not shut the client down. The `Client` is a process-wide singleton, so shutting it down would break the next session in the same process. Same for the providers we installed.
 - OTel auto-setup respects host providers. Only install a provider when the global is the default proxy. Track installed providers separately so `force_flush` only touches ours.
 - Use the SDK's exporter for generations: `GenerationExportConfig(protocol="http", auth=AuthConfig(mode="basic", ...))`. Do not hand-roll basic auth or POST loops, because the SDK has retry, batching and queueing built in.
@@ -166,11 +167,14 @@ make sync            # install the venv from uv.lock
 make lint            # ruff format --check, ruff check, ty
 make test            # pytest on the default Python
 make test-all        # pytest on 3.11, 3.12, 3.13 and 3.14
+make coverage        # pytest with branch coverage, enforcing the fail_under gate
 make changelog-test  # the changelog scripts in scripts/
-make check           # lint + test + changelog-test
+make check           # lint + coverage + changelog-test
 ```
 
 `make lint` runs the same three checks as the CI lint job. `make format` rewrites files instead of checking them. `make changelog-test` runs in the CI lint job as well, because the scripts are bash and have nothing to do with the Python matrix.
+
+`make test` is the fast local loop; CI runs `make coverage` on every matrix leg. The `fail_under` gate in `pyproject.toml` sits just under what the suite reaches, so a change that stops exercising a path fails the build instead of being noticed a release later. Raise it when the number goes up. The comment beside it names the handful of lines that stay uncovered on purpose, so nobody spends an afternoon on them.
 
 Commit `uv.lock` with any dependency change. CI runs `uv sync --locked`, which fails when the lock is out of date with `pyproject.toml`.
 
@@ -178,9 +182,22 @@ hatch-vcs derives the version from the git tag, so `pyproject.toml` has no `vers
 
 Tests stub `agento11y.Client` with `tests/conftest.py:FakeClient` and `_otel.setup_if_needed` with a no-op. The autouse `reset_module_state` fixture clears the cached client + recorder state between tests, and `_otel._reset_for_tests()` shuts down any real providers we installed (otherwise their export threads keep retrying against localhost in the background).
 
+`FakeClient` and `FakeRecorder` take a `raises` set naming the methods that blow up instead of recording, and the `failing_client` fixture builds the singleton with it. That is what makes the fail-open paths testable at all: the code that runs on a failure is the code inside `except`, which no amount of reading verifies.
+
 `tests/__init__.py` exists (empty) so `tests/` is an importable package. Three tests do `from tests.conftest import FakeClient` inside `Client` factory lambdas.
 
 `tests/test_hooks.py` omits `api_request_id`, so every case in it exercises the legacy path. `tests/test_hooks_request_scoped.py` covers the current one. Both are needed while the fallback lives.
+
+What the other test files are for:
+
+| File | Covers |
+|---|---|
+| `test_fail_open.py` | every hook against a raising SDK, a raising state layer, and malformed payloads |
+| `test_message_mapping.py` | hermes payload to SDK `Message`, in both the dict and the attribute-object shape |
+| `test_coerce.py` | the `_coerce` helpers, which absorb a wrong type rather than raising |
+| `test_tags.py` | the `.git` walk: symbolic and detached HEAD, worktree and submodule pointers, no repo |
+| `test_flush.py` | draining both channels, including a provider that cannot flush or shut down |
+| `test_hook_edges.py` | sampling, the tool-to-generation link, and the legacy convo bookkeeping |
 
 The suite reads the ambient environment, so exported `AGENTO11Y_*` / `SIGIL_*` values fail the no-credentials cases. Run it clean: `env -i PATH="$PATH" HOME="$HOME" uv run python -m pytest -q`.
 

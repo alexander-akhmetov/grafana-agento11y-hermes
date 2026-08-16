@@ -257,3 +257,45 @@ def test_an_unreadable_tool_list_does_not_cost_the_rest_of_the_body(caplog: pyte
     assert facts.tools == []
     assert facts.system_prompt == "be helpful"
     assert facts.max_tokens == 8192, "a broken tool mapping must not cost the fields beside it"
+
+
+def test_an_unreadable_body_never_reaches_the_hook(caplog: pytest.LogCaptureFixture) -> None:
+    """``parse`` never raises, whatever hermes reshaped the body into."""
+
+    class HostileBody(dict):
+        def get(self, *_: Any, **__: Any) -> Any:
+            raise RuntimeError("body refused to answer")
+
+    with caplog.at_level(logging.DEBUG, logger="grafana_agento11y_hermes._request"):
+        facts = _request.parse({"method": "POST", "body": HostileBody(system="be helpful")})
+
+    assert "could not read the request body" in caplog.text
+    assert facts.system_prompt == ""
+    assert facts.max_tokens is None
+
+
+def test_an_unreadable_envelope_never_reaches_the_hook(caplog: pytest.LogCaptureFixture) -> None:
+    """The read that picks the body out is guarded too, being upstream of the rest."""
+
+    class HostileRequest(dict):
+        def get(self, *_: Any, **__: Any) -> Any:
+            raise RuntimeError("envelope refused to answer")
+
+    with caplog.at_level(logging.DEBUG, logger="grafana_agento11y_hermes._request"):
+        facts = _request.parse(HostileRequest(body={"system": "be helpful"}))
+
+    assert "could not read the request envelope" in caplog.text
+    assert facts.truncated is True
+    assert facts.tools == []
+
+
+def test_the_clip_marker_scan_stops_at_its_depth_limit() -> None:
+    """A tool schema can nest arbitrarily; the scan for a clip marker cannot."""
+    marker = {_request._CLIP_SENTINEL: 5}
+    within: Any = marker
+    for _ in range(_request._MAX_SCAN_DEPTH):
+        within = {"properties": within}
+    assert _request._carries_clip_marker(within) is True
+
+    beyond = {"properties": within}
+    assert _request._carries_clip_marker(beyond) is False, "past the limit it reports nothing rather than recursing"

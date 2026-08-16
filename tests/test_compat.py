@@ -7,6 +7,8 @@ which also bypasses its once-per-process guard.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from grafana_agento11y_hermes import _compat
@@ -64,6 +66,27 @@ def test_sdk_rename_table_is_reachable() -> None:
 
     assert table["SIGIL_AUTH_TOKEN"] == "AGENTO11Y_AUTH_TOKEN"
     assert len(table) > len(_compat._EXTRA_RENAMES)
+
+
+def test_our_extras_survive_an_sdk_without_the_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The private import is the one thing here that a new SDK can take away."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    # The parameters are spelled out rather than taken as *args, because the
+    # shim is checked against the real ``__import__`` signature.
+    def guarded(name: str, globals: Any = None, locals: Any = None, fromlist: Any = (), level: int = 0) -> Any:
+        if name == "agento11y.config":
+            raise ImportError("no config module")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded)
+
+    table = _compat.renames()
+
+    assert table == _compat._EXTRA_RENAMES
+    assert "SIGIL_AUTH_TOKEN" not in table, "the SDK owns that one, and it is gone"
 
 
 def test_unrelated_names_are_untouched() -> None:

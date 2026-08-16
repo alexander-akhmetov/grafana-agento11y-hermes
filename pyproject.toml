@@ -30,6 +30,7 @@ dependencies = [
 [dependency-groups]
 dev = [
   "pytest>=8.0",
+  "pytest-cov>=6.0",
   "ruff>=0.16.3",
   "ty==0.0.72",
 ]
@@ -71,3 +72,12 @@ python-version = "3.11"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.coverage.run]
+source = ["grafana_agento11y_hermes"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 99

@@ -93,18 +93,27 @@ def parse(
     """
     facts = RequestFacts()
 
-    body = request.get("body") if isinstance(request, dict) else None
-    if not isinstance(request, dict) or request.get("_truncated") or not isinstance(body, dict):
-        # No readable body. The two unsanitized kwargs are still worth reading,
-        # so carry on against an empty one rather than returning here.
+    body: Any = {}
+    try:
+        candidate = request.get("body") if isinstance(request, dict) else None
+        if not isinstance(request, dict) or request.get("_truncated") or not isinstance(candidate, dict):
+            # No readable body. The two unsanitized kwargs are still worth
+            # reading, so carry on against an empty one rather than returning.
+            facts.truncated = True
+        else:
+            body = candidate
+    except Exception as exc:
+        # The reads below are inside their own guards, but this one decides
+        # what they read from, so it cannot be left to them.
+        logger.debug("grafana-agento11y-hermes: could not read the request envelope: %s", exc)
         facts.truncated = True
-        body = {}
 
-    inference = body.get("inferenceConfig")
-    if not isinstance(inference, dict):
-        inference = {}
+    inference: Any = {}
 
     try:
+        candidate = body.get("inferenceConfig")
+        if isinstance(candidate, dict):
+            inference = candidate
         facts.system_prompt, facts.system_prompt_clipped = _system_prompt(body, system_prompt, request_messages)
         facts.max_tokens = _output_cap(
             (body, "max_tokens"),

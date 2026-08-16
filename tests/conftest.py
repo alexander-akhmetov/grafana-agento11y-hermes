@@ -10,7 +10,7 @@ ordering doesn't leak.
 from __future__ import annotations
 
 import itertools
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
@@ -46,13 +46,22 @@ class FakeSpan:
         self.attributes[key] = value
 
 
-class FakeRecorder:
-    """Records lifecycle calls for assertions."""
+class SdkExploded(RuntimeError):
+    """What an injected SDK failure raises. Distinct so a test can name it."""
 
-    def __init__(self) -> None:
+
+class FakeRecorder:
+    """Records lifecycle calls for assertions.
+
+    ``raises`` names the methods that blow up instead of recording, which is how
+    ``test_fail_open`` drives every SDK failure the plugin has to survive.
+    """
+
+    def __init__(self, raises: frozenset[str] = frozenset()) -> None:
         self.span = FakeSpan()
         self.entered = False
         self.exited = False
+        self.raises = raises
         self.set_result_calls: list[dict[str, Any]] = []
         self.set_call_error_calls: list[Exception] = []
         self.set_exec_error_calls: list[Exception] = []
@@ -60,54 +69,75 @@ class FakeRecorder:
         # ordering rather than just occurrence.
         self.calls: list[str] = []
 
+    def _maybe_raise(self, name: str) -> None:
+        if name in self.raises:
+            raise SdkExploded(f"{name} exploded")
+
     def __enter__(self) -> FakeRecorder:
         self.entered = True
+        self._maybe_raise("__enter__")
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         self.exited = True
+        self._maybe_raise("__exit__")
         return False
 
     def set_result(self, *args: Any, **kwargs: Any) -> None:
         self.calls.append("set_result")
         self.set_result_calls.append(dict(kwargs))
+        self._maybe_raise("set_result")
 
     def set_call_error(self, error: Exception) -> None:
         self.calls.append("set_call_error")
         self.set_call_error_calls.append(error)
+        self._maybe_raise("set_call_error")
 
     def set_exec_error(self, error: Exception) -> None:
         self.calls.append("set_exec_error")
         self.set_exec_error_calls.append(error)
+        self._maybe_raise("set_exec_error")
 
 
 class FakeClient:
-    """In-memory stand-in for ``agento11y.Client``."""
+    """In-memory stand-in for ``agento11y.Client``.
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    ``raises`` names the client and recorder methods that fail. Recorder names
+    are handed to every recorder this client hands out.
+    """
+
+    def __init__(self, *args: Any, raises: frozenset[str] = frozenset(), **kwargs: Any) -> None:
         self.start_generation_calls: list[Any] = []
         self.start_tool_execution_calls: list[Any] = []
         self.flush_calls = 0
         self.shutdown_calls = 0
+        self.raises = raises
         self.init_args = args
         self.init_kwargs = kwargs
         self._next_gen_recorder: FakeRecorder | None = None
         self._next_tool_recorder: FakeRecorder | None = None
 
+    def _maybe_raise(self, name: str) -> None:
+        if name in self.raises:
+            raise SdkExploded(f"{name} exploded")
+
     def start_generation(self, start: Any) -> FakeRecorder:
         self.start_generation_calls.append(start)
-        rec = FakeRecorder()
+        self._maybe_raise("start_generation")
+        rec = FakeRecorder(self.raises)
         self._next_gen_recorder = rec
         return rec
 
     def start_tool_execution(self, start: Any) -> FakeRecorder:
         self.start_tool_execution_calls.append(start)
-        rec = FakeRecorder()
+        self._maybe_raise("start_tool_execution")
+        rec = FakeRecorder(self.raises)
         self._next_tool_recorder = rec
         return rec
 
     def flush(self) -> None:
         self.flush_calls += 1
+        self._maybe_raise("flush")
 
     def shutdown(self) -> None:
         self.shutdown_calls += 1
@@ -160,6 +190,32 @@ def patch_client(monkeypatch: pytest.MonkeyPatch, env_creds: None) -> FakeClient
     client = _client._get_client()
     assert isinstance(client, FakeClient), "fake client should have been constructed"
     return client
+
+
+@pytest.fixture
+def failing_client(monkeypatch: pytest.MonkeyPatch, env_creds: None) -> Callable[..., FakeClient]:
+    """Build the plugin's singleton client with named SDK calls set to fail.
+
+    Same wiring as ``patch_client``, except the caller names which of the
+    client and recorder methods raise ``SdkExploded``.
+    """
+    import agento11y
+
+    from grafana_agento11y_hermes import _otel
+
+    def build(*names: str) -> FakeClient:
+        raises = frozenset(names)
+
+        def factory(*args: Any, **kwargs: Any) -> FakeClient:
+            return FakeClient(*args, raises=raises, **kwargs)
+
+        monkeypatch.setattr(agento11y, "Client", factory)
+        monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
+        client = _client._get_client()
+        assert isinstance(client, FakeClient), "fake client should have been constructed"
+        return client
+
+    return build
 
 
 class FakeContext:
