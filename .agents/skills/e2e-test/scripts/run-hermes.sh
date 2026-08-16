@@ -24,6 +24,16 @@
 #   MODEL / PROVIDER    default claude-haiku-4-5-20251001 on anthropic
 #   AGENT_NAME          default hermes-e2e; the mode becomes the agent version,
 #                       so runs are trivially separable in queries
+#
+# The environment is built with env -i, so a knob set in the calling shell does
+# not reach hermes unless it is named in PASSTHROUGH below. Each inherited value
+# is echoed, because a silently dropped knob makes a run look like a pass:
+#   AGENTO11Y_HERMES_SAMPLE_RATE      0 records nothing
+#   AGENTO11Y_HERMES_MAX_CHARS        per-string cap on tool args and results
+#   AGENTO11Y_HERMES_OTEL_AUTO        false leaves provider installation alone
+#   HERMES_PLUGIN_PAYLOAD_MAX_CHARS   hermes's own cap, which decides how much
+#                                     of the system prompt and the tool schemas
+#                                     reach the hooks at all
 set -uo pipefail
 
 MODE="${1:?usage: run-hermes.sh <mode> <prompt> [args...]}"; shift
@@ -76,6 +86,19 @@ COMMON=(
   "AGENTO11Y_AGENT_NAME=$AGENT_NAME"
   "AGENTO11Y_AGENT_VERSION=$MODE"
 )
+PASSTHROUGH=(
+  AGENTO11Y_HERMES_SAMPLE_RATE
+  AGENTO11Y_HERMES_MAX_CHARS
+  AGENTO11Y_HERMES_OTEL_AUTO
+  HERMES_PLUGIN_PAYLOAD_MAX_CHARS
+)
+for name in "${PASSTHROUGH[@]}"; do
+  value="$(printenv "$name" 2>/dev/null || true)"
+  if [ -n "$value" ]; then
+    COMMON+=("$name=$value")
+    echo "run-hermes: inherited $name=$value" >&2
+  fi
+done
 
 case "$MODE" in
   full)       ENVV=("${COMMON[@]}" "${GENERATIONS[@]}" "${OTEL[@]}") ;;

@@ -47,8 +47,13 @@ class Handler(BaseHTTPRequestHandler):
                     for scope_spans in resource_spans.scope_spans:
                         for span in scope_spans.spans:
                             attrs = sorted(a.key for a in span.attributes)
+                            # Ids, because a tool span is expected to sit under
+                            # the generation span of the call that asked for it,
+                            # and this is the one view no sampling can hide.
                             log(
                                 f"SPAN {span.name} | status={span.status.code} "
+                                f"| trace={span.trace_id.hex()} span={span.span_id.hex()} "
+                                f"parent={span.parent_span_id.hex() or '(root)'} "
                                 f"| service={resource.get('service.name')} | attrs={attrs}"
                             )
             elif self.path.endswith("/v1/metrics"):

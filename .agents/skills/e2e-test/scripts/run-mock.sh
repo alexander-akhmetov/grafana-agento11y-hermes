@@ -27,6 +27,13 @@ read_setting() {
   printf '%s' "$value"
 }
 
+# The setup page hands out the standard name, but a stored credential file may
+# hold the branded alias instead. Without this fallback the mock runs get no
+# OTLP endpoint, no provider is installed, and every record comes back with a
+# null trace_id, which hides the span half of a failure.
+OTLP_ENDPOINT=$(read_setting OTEL_EXPORTER_OTLP_ENDPOINT)
+[ -z "$OTLP_ENDPOINT" ] && OTLP_ENDPOINT=$(read_setting AGENTO11Y_OTEL_EXPORTER_OTLP_ENDPOINT)
+
 MOCK_HOME="$E2E_DIR/home-mock"
 mkdir -p "$MOCK_HOME/plugins"
 cp -R "$SKILL_DIR/scripts/probe-plugin" "$MOCK_HOME/plugins/hookdump"
@@ -58,7 +65,7 @@ env -i \
   AGENTO11Y_PROTOCOL=http AGENTO11Y_AUTH_MODE=basic \
   AGENTO11Y_AUTH_TENANT_ID="$(read_setting AGENTO11Y_AUTH_TENANT_ID)" \
   AGENTO11Y_AUTH_TOKEN="$(read_setting AGENTO11Y_AUTH_TOKEN)" \
-  OTEL_EXPORTER_OTLP_ENDPOINT="$(read_setting OTEL_EXPORTER_OTLP_ENDPOINT)" \
+  OTEL_EXPORTER_OTLP_ENDPOINT="$OTLP_ENDPOINT" \
   OTEL_EXPORTER_OTLP_HEADERS="$(read_setting OTEL_EXPORTER_OTLP_HEADERS)" \
   "$E2E_DIR/.venv/bin/hermes" -m mock-model --provider openai-api -z "$PROMPT" "$@"
 rc=$?

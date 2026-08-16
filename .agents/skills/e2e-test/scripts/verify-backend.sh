@@ -39,15 +39,20 @@ echo "== agent catalog entry ($AGENT_NAME)"
 "${GCX[@]}" agento11y agents get "$AGENT_NAME" -o json 2>/dev/null \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps({k: d.get(k) for k in ("declared_version_latest","generation_count","tool_count","system_prompt_prefix","token_estimate","models")}, indent=1))'
 
+# Every metric query looks back an hour instead of asking for the value now. An
+# instant query only sees a series that got a sample inside the lookback window,
+# so a run that finished ten minutes ago reads as "No data" and looks like a
+# plugin that exports no metrics.
+WINDOW="${METRICS_WINDOW:-1h}"
 echo
-echo "== metrics (client-side, emitted by the plugin)"
-"${GCX[@]}" metrics query "count by (__name__) ({__name__=~\"gen_ai.*\", gen_ai_agent_name=\"$AGENT_NAME\"})" 2>&1 | head -12
+echo "== metrics (client-side, emitted by the plugin, last $WINDOW)"
+"${GCX[@]}" metrics query "count by (__name__) (last_over_time({__name__=~\"gen_ai_client.*\", gen_ai_agent_name=\"$AGENT_NAME\"}[$WINDOW]))" 2>&1 | head -14
 echo
-echo "== token usage by type"
-"${GCX[@]}" metrics query "sum by (gen_ai_token_type) (gen_ai_client_token_usage_sum{gen_ai_agent_name=\"$AGENT_NAME\"})" 2>&1 | head -10
+echo "== token usage by type (last $WINDOW)"
+"${GCX[@]}" metrics query "sum by (gen_ai_token_type) (last_over_time(gen_ai_client_token_usage_sum{gen_ai_agent_name=\"$AGENT_NAME\"}[$WINDOW]))" 2>&1 | head -10
 echo
-echo "== cost (computed backend-side from model + tokens)"
-"${GCX[@]}" metrics query "sum by (gen_ai_request_model) (agento11y_generation_cost_usd_total{gen_ai_agent_name=\"$AGENT_NAME\"})" 2>&1 | head -10
+echo "== cost (computed backend-side from model + tokens, last $WINDOW)"
+"${GCX[@]}" metrics query "sum by (gen_ai_request_model) (last_over_time(agento11y_generation_cost_usd_total{gen_ai_agent_name=\"$AGENT_NAME\"}[$WINDOW]))" 2>&1 | head -10
 
 echo
 echo "== tool execution spans"

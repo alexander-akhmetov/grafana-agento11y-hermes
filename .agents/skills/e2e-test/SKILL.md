@@ -67,12 +67,33 @@ $S/run-hermes.sh none       "Reply with exactly: NO-CHANNEL-OK"
 AGENTO11Y_HERMES_SAMPLE_RATE=0 $S/run-hermes.sh full "Reply with exactly: SAMPLED-OUT"
 ```
 
+The request payload decides how much of the prompt, the toolset and the sampling
+params the plugin can record, so run `full` at three payload caps. Force a tool
+loop each time, because the point is what the second and third request of a
+session carry:
+
+```bash
+CAP="HERMES_PLUGIN_PAYLOAD_MAX_CHARS"
+P="Run 'echo CAP-A' with your terminal tool, then run 'echo CAP-B', then reply with both lines."
+
+env $CAP=400000 $S/run-hermes.sh full "$P"   # every request reads its own body
+env $CAP=60000  $S/run-hermes.sh full "$P"   # later requests collapse, so they reuse the first
+$S/run-hermes.sh full "$P"                   # hermes's own default, 50000
+```
+
+Read the result with `check-generations.py`, which prints the recorded prompt
+length and whether hermes had already clipped it, the tool count against the raw
+`hermes.tool_count`, the sampling params, and `hermes.request_facts_reused`. At a
+roomy cap nothing is reused; as the cap tightens, `facts reused` turns true on
+the requests that arrived clipped, and the recorded values are the ones the first
+request of that session carried.
+
 What each mode must produce:
 
 | mode | generations | spans | notes |
 |---|---|---|---|
 | `full` | one per API call | generation + tool spans | content capture defaults to full when the mode env is unset |
-| `metadata` | same, text stripped | same, no tool args/results | structure, usage, model and stop reason survive |
+| `metadata` | same, text stripped | same, no tool args/results | structure, usage, model and stop reason survive. Tool *names* and the sampling params still leave the machine; the prompt, the message text and the tool schemas do not |
 | `legacy-env` | yes | yes | retired `SIGIL_*` names only; also proves the branded OTLP alias and credential-derived basic auth |
 | `gen-only` | yes, `trace_id` null | none | no OTLP endpoint, so no provider is installed |
 | `otel-only` | none | yes | no generation credentials |
@@ -104,6 +125,26 @@ the usage attributes, and the finish reason. A tool span should carry
 `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.request.model` (the plugin
 remembers it per session, since the tool hook does not pass one) and, under full
 capture, `gen_ai.tool.call.arguments` / `.result`.
+
+Three things to check on the records and spans of a tool loop:
+
+- Generations of one turn chain. `check-generations.py` prints the chain, and
+  every generation after the first in a turn should name the previous one in
+  `parent_generation_ids`. A retry that was superseded must not appear as a
+  parent, because the link is written at close time.
+- A tool span sits under the generation span that asked for the tool.
+  `show-spans.py` prints `span_id` / `parent_span_id` for that. The parent has
+  already ended by then, so the child's window runs past its parent's end; that
+  is expected, not a bug.
+- A tool span also carries
+  `agento11y.generation.parent_generation_ids`. It is speculative, written by no
+  SDK, so treat a backend that ignores it as normal.
+
+The tag split is visible here too: client tags (`agento11y.framework.*`,
+`entrypoint`, `git.branch`) reach spans as `agento11y.tag.<key>` and become label
+dimensions on the duration metrics, while `cwd` is a seed tag and so appears on
+the generation record only. A `cwd` on a span means it moved to the client tags,
+which adds a metric series per working directory.
 
 Export is asynchronous: wait a few seconds before querying.
 
