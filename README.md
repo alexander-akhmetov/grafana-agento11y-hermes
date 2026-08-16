@@ -35,7 +35,8 @@ plugins:
 
 > Hermes's `plugins enable` CLI does not see pip-installed plugins yet. It only scans `~/.hermes/plugins/` and the bundled directory. Editing the YAML directly is the workaround.
 
-## Upgrading from hermes-plugin-sigil
+<details>
+<summary>Upgrading from hermes-plugin-sigil</summary>
 
 The package, the module, the entry-point key and the env vars were all renamed.
 
@@ -52,6 +53,8 @@ The uninstall is required. The new package has a different name, so pip installs
 
 3. Rename your `SIGIL_*` env vars to `AGENTO11Y_*`, keeping the suffix (`SIGIL_ENDPOINT` becomes `AGENTO11Y_ENDPOINT`). The setup page in Configure below gives you a fresh block with the new names. The plugin still reads the old names for now and logs what to rename, so nothing breaks the moment you upgrade. The SDK itself ignores them, so this fallback goes away once the SDK is fixed.
 
+</details>
+
 ## Configure
 
 Everything comes from one page in your stack:
@@ -61,8 +64,6 @@ Everything comes from one page in your stack:
 1. Click **Create token**.
 2. Click **Copy as environment variables**.
 3. Put the block in the environment hermes starts from.
-
-Create the token first.
 
 The block you get:
 
