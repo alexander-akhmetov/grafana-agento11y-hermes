@@ -1,5 +1,8 @@
 # grafana-agento11y-hermes
 
+> [!IMPORTANT]
+> This project has moved to [grafana/agento11y/plugins/hermes](https://github.com/grafana/agento11y/tree/main/plugins/hermes).
+
 [![PyPI](https://img.shields.io/pypi/v/grafana-agento11y-hermes)](https://pypi.org/project/grafana-agento11y-hermes/)
 
 ![Grafana Agent Observability UI](https://raw.githubusercontent.com/alexander-akhmetov/grafana-agento11y-hermes/main/img.png)
